@@ -35,7 +35,40 @@ Five principles govern every architectural decision in HyperMesh.
 **Privacy as configuration.** Privacy is not a binary property. It is configured along two independent axes -- Access Scope (Bounded or Unbounded) and Tracked (true or false) -- producing three named presets (Anonymous, Private, Public) that a single node can use simultaneously on different connections. Privacy mode is enforced at the kernel level through eBPF policy maps, not just in application logic.
 
 
-## 3. Architecture
+## 3. Protocol Requirements
+
+The design principles (Section 2) produce concrete, testable requirements. Every compliant HyperMesh implementation MUST satisfy these. They are non-negotiable for protocol correctness.
+
+**R1. Sovereign genesis with asset instantiation.** A node MUST produce a functioning local blockchain from a genesis block on boot, with zero network connectivity. The genesis block MUST instantiate the node's hardware as addressable assets -- CPU, GPU, Memory, Storage, Network interfaces -- each with an IPv6 address in the HyperMesh address space (`fd48:4d00::/32`) and an initial Proof of State. Hardware is assessed, not self-reported: the node measures its own capabilities (core count, clock speed, VRAM, RAM capacity, disk capacity and type, interface bandwidth) and records them as assets with proofs. These genesis assets form the root of the node's asset tree and determine what the node can contribute to the mesh.
+
+**R2. Four-proof authentication.** Every state claim MUST carry a complete Proof of State: Proof of Space (WHERE), Proof of Stake (WHO), Proof of Work (WHAT), Proof of Time (WHEN). Partial proofs are invalid. Authentication is binary -- authentic or not. There are no trust scores, no reputation floats, and no partial validity.
+
+**R3. Pipeline ordering.** Asset data MUST be processed in strict order: Compress (Brotli) -> Encrypt (Kyber-1024 KEM -> AES-256-GCM, whole blob) -> Shard (Reed-Solomon erasure coding) -> Distribute (tensor-weighted placement). Encryption operates on the entire compressed blob before sharding. Per-shard encryption is a protocol violation.
+
+**R4. Content-addressed deduplication with privacy-scoped tracking.** Shards with identical content (identical BLAKE3 hash) MUST be stored once per storage domain with reference counting. Deduplication tracking is scoped to the privacy boundary: Device scope has full reference tracking, Private networks track within their trust boundary, Anonymous mode stores content-addressed shards but performs no cross-node reference tracking. Tamper detection is inherent in content addressing -- `BLAKE3(data) == expected_hash` -- and does not depend on reference metadata.
+
+**R5. Erasure-coded redundancy.** Shards MUST be erasure-coded such that any k of n shards are sufficient for reconstruction (default: 10-of-14 Reed-Solomon). Loss of up to n-k shards MUST NOT cause data loss.
+
+**R6. Instruction-based retrieval.** Asset transfer MUST transmit a shard map (content hash, shard hashes, matrix positions, fallback locations) -- not raw data. The receiver reconstructs from the map. Instruction payload MUST remain under 1 KB regardless of asset size.
+
+**R7. Post-quantum storage encryption.** Data at rest MUST be encrypted with a post-quantum KEM (Kyber-1024). Classical-only encryption for stored assets is a protocol violation. Transport-layer key exchange (X25519) is acceptable because session keys are ephemeral.
+
+**R8. Cipher suite policy.** The standard cipher suite (FALCON-1024, Kyber-1024, X25519, AES-256-GCM, BLAKE3) is the default for all networks and non-negotiable on the Public network. Private and Anonymous networks MAY agree on alternative cipher suites between consenting participants. Cross-network communication (via Gateway) always uses the standard suite.
+
+**R9. Privacy-scope independence.** Network privacy (Anonymous/Private/Public) and blockchain scope (Device/Network) MUST be independently configurable. No combination is prohibited. Kernel-level isolation between privacy modes is required via eBPF policy maps.
+
+**R10. Universal asset model with transmission.** Every resource MUST be represented as an asset with a universal AssetId, an IPv6 address, a Proof of State, and blockchain registration. System asset types: Cpu, Gpu, Memory, Storage, Network, Container, Transmission, Dns, Blockchain, Economic. Transmission is a first-class asset representing bandwidth available for mesh relay -- data communication across networks must exist without overhead beyond the Transmission asset's own proof. The genesis block instantiates initial assets from hardware assessment (R1).
+
+**R11. Bilateral verification.** State verification MUST be bilateral between transacting parties. No operation requires global consensus, quorum, or leader election. Verification cost scales with transaction volume, not mesh size.
+
+**R12. Shard commitment with swarm scaling.** Each block MUST commit to its shard distribution via `BLAKE3(sorted shard placements)`, anchoring the block's hash chain to its spatial evidence across the matrix. For popular content, consumers MUST become providers: shard distribution cascades through the swarm so that no single node bears more than O(log N) of the distribution load for N concurrent consumers. Replica discovery uses matrix-neighbor gossip, not centralized tracking. One million concurrent consumers of the same content MUST be served through peer-to-peer cascade with near-zero per-node overhead.
+
+**R13. Minimum device specification.** The protocol MUST operate on devices with: 1 Mb/s network, 50 GB storage, 4 GB RAM, dual-core 1 GHz processor. Shard reconstruction MUST be streaming -- not buffer-all-then-reconstruct. This is the floor: the protocol must run on legacy hardware, low-tier consumer devices, and minimal virtual machines.
+
+**R14. Adaptive shard sizing.** Erasure coding parameters MUST scale with asset size to keep individual shards within a transfer-efficient range. Post-creation shard splitting is prohibited -- it breaks content-addressing hashes (the shard's BLAKE3 hash is its identity for dedup, bucket assignment, retrieval maps, and block commitment). Wire-level chunking is handled by QUIC stream transfer in the transport layer, not by subdividing the content-addressed unit. Rebalancing MUST NOT require rehashing the network. Shard migration uses copy-then-redirect, not move-then-update. Adaptive sizing MUST NOT cause fault intolerance or throughput bottlenecks.
+
+
+## 4. Architecture
 
 HyperMesh is composed of six layers, ordered by dependency. Each layer depends only on the layer immediately below it. All layers share a canonical type system (hypermesh-lib) that defines the common identifiers, modes, and positions used across the protocol.
 
@@ -77,11 +110,11 @@ Cross-layer communication occurs through Rust trait boundaries:
 A minimal node runs layers 1 through 4 as a single statically-linked binary configured by a single TOML file. Caesar is an optional leaf; removing it changes nothing about the behavior of layers 1 through 4. The core mesh is a commons; Caesar and Engauge add an optional commercial layer.
 
 
-## 4. Transport: STOQ Protocol
+## 5. Transport: STOQ Protocol
 
 STOQ is built on QUIC (via the Quinn library in Rust) running exclusively over IPv6. The choice of QUIC provides multiplexed streams with independent flow control, 0-RTT reconnection for returning peers, and connection migration when a node's address changes. IPv6 gives every node a globally routable address, eliminating NAT traversal and enabling direct peer connectivity. The protocol identifier is `stoq/1.0` (ALPN negotiation per RFC 8439).
 
-### 4.1 Kernel Integration
+### 5.1 Kernel Integration
 
 Packet processing begins in kernel space, before the operating system's network stack allocates socket buffers. A unified eBPF intelligence layer (hypermesh-ebpf) serves as the single source of truth for all packet decisions. Three consumers interact with it: STOQ as a thin transport wrapper, BlockMatrix as a policy configurator, and the kernel XDP program as the enforcement point.
 
@@ -89,7 +122,7 @@ Four classes of eBPF programs provide different capabilities. **XDP programs** c
 
 These four program types are compiled from C source by the build system and loaded into the kernel at runtime through the eBPF loader.
 
-### 4.2 Zero-Copy Packet I/O
+### 5.2 Zero-Copy Packet I/O
 
 High-throughput data paths bypass the kernel's socket buffer allocation entirely through AF_XDP (Address Family XDP). When the XDP program redirects a packet, it lands directly in a shared memory region (UMEM) accessible to both kernel and userspace, eliminating copy operations.
 
@@ -104,7 +137,7 @@ Each ring uses atomic producer and consumer pointers for lock-free operation. A 
 
 The system degrades gracefully across three tiers: full eBPF with AF_XDP zero-copy on capable kernels, eBPF without AF_XDP on older kernels, and pure userspace processing where eBPF is unavailable. The orchestrator detects kernel capabilities at startup and selects the highest-performance path available.
 
-### 4.3 Policy Enforcement
+### 5.3 Policy Enforcement
 
 Four BPF maps maintain kernel-side state that the XDP program consults on every packet:
 
@@ -115,24 +148,37 @@ Four BPF maps maintain kernel-side state that the XDP program consults on every 
 
 Policy is serialized from userspace into a 32-byte little-endian format matching the C kernel struct, then synchronized to BPF maps through `sync_to_kernel`. This keeps kernel-space decisions consistent with userspace policy changes without requiring program reload.
 
-### 4.4 Protocol Intelligence
+### 5.4 Protocol Intelligence
 
 STOQ is not a passive transport -- it provides protocol-level intelligence. Validation hooks allow two external systems to participate in packet-level decisions: STOQ registers a CertificateValidator (checking DER format, ASN.1 structure, and minimum certificate size) and a PacketValidator (checking QUIC header format, shard indices, and timestamp sanity with 5-minute clock skew tolerance). BlockMatrix registers an ExtensionValidator for HyperMesh-specific header fields (Proof of State, asset hash, matrix routing, privacy tier). All three validators are registered through `set_validation_hooks()` and invoked on the fast path.
 
 Proof of State pre-validation occurs at the eBPF layer: format checks, algorithm indicator validation, and difficulty verification happen in kernel space. Deep cryptographic verification -- FALCON-1024 signature checks -- happens in userspace through TrustChain, and the results are fed back to the eBPF policy layer to update trust state.
 
-### 4.5 Cryptographic Handshake and Congestion
+### 5.5 Cryptographic Handshake and Congestion
 
 The cryptographic handshake combines classical and post-quantum primitives. Key exchange uses X25519 elliptic-curve Diffie-Hellman, authenticated by FALCON-1024 lattice-based signatures. Each protocol frame carries a dynamic FALCON key_id, and real signature verification is performed by the FalconTrustChainClient using `pqcrypto_falcon::falcon1024`. Subsequent connections to the same peer use 0-RTT resumption.
 
 Congestion control defaults to BBR v2, with CUBIC and NewReno available as alternatives. STOQ's BBR variant maintains per-path state, estimating bottleneck bandwidth and minimum RTT for each unique route. Six network tier profiles (Slow, Home, Standard, Performance, Enterprise, DataCenter) automatically configure buffer sizes and concurrency limits based on measured link capacity, from 256 KB send buffers with 10 concurrent streams on sub-100 Mbps links to 16 MB buffers with 1,000 concurrent streams on 10+ Gbps links.
 
-### 4.6 Protocol Extensions
+### 5.6 Protocol Extensions
 
 STOQ defines six custom QUIC frame types in the private-use range (`0xfe000001` through `0xfe000006`): token frames for Proof of State tokens, shard frames for distribution metadata, hop frames for routing, seed frames for initialization, and two FALCON frames for quantum-resistant authentication and key material. Transport parameters (`0xfe00` through `0xfe04`) negotiate extension support, FALCON enablement, public key exchange, maximum shard size (default: 1,400 bytes, MTU-safe), and token algorithm selection (SHA-256, SHA-384, SHA3-256, or BLAKE3).
 
 
-## 5. Identity: TrustChain
+### 5.7 Bootstrap Sequence
+
+A circular dependency exists between the components required for a fully authenticated connection: TLS certificates require a TrustChain CA, CA discovery requires DNS, DNS registration requires a blockchain block with Proof of State, and block propagation requires a STOQ connection. HyperMesh breaks this cycle by separating encryption from authentication in the bootstrap phase.
+
+**Phase 0 -- Bootstrap.** A new node generates a self-signed certificate using its local TrustChain instance (no CA dependency). QUIC/TLS provides wire encryption; certificate validity is not enforced. The node then opens a bidirectional stream to a bootstrap peer and both sides exchange a JSON handshake containing their matrix coordinate, node ID, and a hex-encoded Proof of State token. The PoS token is validated bilaterally -- each side deserializes the peer's `StateProof`, verifies the four-proof structure, and rejects the connection if validation fails. Proof of State is the trust mechanism; TLS certificates are the encryption mechanism.
+
+**Phase 1 -- Connected.** After PoS validation succeeds, nodes are trusted peers. DNS records are registered as blockchain assets, blocks propagate to connected peers, and shards distribute to matrix neighbors. All operations carry inline PoS headers verified at the eBPF layer (format checks) and in userspace (deep cryptographic verification).
+
+**Phase 2 -- Full PKI (future).** Once connected, nodes can request TrustChain-issued certificates from reflector or gateway nodes that serve as distributed CAs. These certificates replace the initial self-signed certificates, enabling strict TLS verification for long-lived connections. DNS resolution transitions from local HashMap to blockchain-backed queries propagated through the mesh.
+
+This three-phase model ensures that a node can join the network with zero prior trust infrastructure. The minimum bootstrap requirement is a single reachable peer address and a valid Proof of State.
+
+
+## 6. Identity: TrustChain
 
 TrustChain provides identity without centralization through a federated certificate authority. Instead of a single root CA, signing authority is distributed using threshold cryptography: Shamir's Secret Sharing applied to FALCON-1024 key material, with a default threshold of 3-of-5. The full private key is never assembled in any single location. A certificate is valid when it carries signatures from the required threshold of independent CAs.
 
@@ -142,7 +188,7 @@ Certificate Transparency is maintained through append-only Merkle tree logs usin
 
 DNS resolution operates over QUIC (DNS-over-QUIC) through the STOQ transport layer. The global gateway at `trust.hypermesh.online` provides the public entry point for mesh discovery. DNS names are themselves blockchain assets -- registration requires full Proof of State verification (WHERE the name resolves, WHO owns it, WHAT computational work supports it, WHEN it was registered).
 
-### 5.1 Privacy Model
+### 6.1 Privacy Model
 
 Privacy is configured along two axes, producing a grid:
 
@@ -159,14 +205,14 @@ Privacy is configured along two axes, producing a grid:
                    |                   |   ready           |
                    +-------------------+-------------------+
 
-Anonymous mode uses ephemeral keys generated per connection and zeroized on disconnect. No identity persists across sessions. The connection timeout is 30 seconds. Private mode uses CA-issued certificates scoped to a specific federation, providing auditability within a trust boundary. The connection timeout extends to 90 seconds. Public mode registers identity in the global discovery registry, enabling reputation and full discoverability. Connections persist for up to 300 seconds. A single node operates with different presets simultaneously on different connections. The fourth quadrant (Bounded + Untracked) is valid but has no named preset.
+Anonymous mode uses ephemeral keys generated per connection and zeroized on disconnect. No identity persists across sessions. The connection timeout is 30 seconds. Private mode uses CA-issued certificates scoped to a specific federation, providing auditability within a trust boundary. The connection timeout extends to 90 seconds. Public mode registers identity in the global discovery registry, enabling full discoverability. Connections persist for up to 300 seconds. A single node operates with different presets simultaneously on different connections. The fourth quadrant (Bounded + Untracked) is valid but has no named preset.
 
 Network isolation between privacy modes is cryptographic, not logical. Each mode maintains separate connection pools, separate routing state, and separate Proof of State chains. At the kernel level, privacy mode is encoded as a single byte in every packet's HyperMesh extension header (Anonymous = 0, Private = 2, Public = 3) and enforced by BPF policy maps -- isolation is not merely a software convention but a kernel-enforced boundary.
 
-The privacy model operates on two independent dimensions that are often conflated in other systems. **Network privacy** (the two-axis model above) governs the transport layer: how packets are routed, whether connections are tracked, and what identity is disclosed. **Blockchain scope** (Section 6.2) governs the consensus layer: which nodes participate in state verification. These dimensions are fully orthogonal -- a Private blockchain can communicate over an Anonymous network for maximum security, and a Public blockchain can operate over a Federated network for controlled access.
+The privacy model operates on two independent dimensions that are often conflated in other systems. **Network privacy** (the two-axis model above) governs the transport layer: how packets are routed, whether connections are tracked, and what identity is disclosed. **Blockchain scope** (Section 7.2) governs the consensus layer: which nodes participate in state verification. These dimensions are fully orthogonal -- a Private blockchain can communicate over an Anonymous network for maximum security, and a Public blockchain can operate over a Federated network for controlled access.
 
 
-## 6. Topology: BlockMatrix
+## 7. Topology: BlockMatrix
 
 Every node in the mesh occupies a position in a three-dimensional coordinate space. The x-axis encodes hop distance, the y-axis encodes latency profile, and the z-axis encodes bandwidth class. Three dimensions capture over 95% of routing variance in real mesh topologies; two dimensions cannot represent the asymmetry between latency and bandwidth that characterizes heterogeneous infrastructure. Four distance metrics are available: Euclidean (geometric distance), Manhattan (grid distance), Chebyshev (maximum-axis distance), and Haversine (great-circle distance for geospatial coordinates).
 
@@ -174,11 +220,13 @@ Coordinate assignment is decentralized. A joining node measures round-trip laten
 
 Each link between two nodes is scored by a 4-element tensor: bandwidth (Gbps), latency (ms RTT), reliability (0 to 1), and load (0 to 1). Tensors are asymmetric -- the tensor from A to B differs from B to A, capturing differences in upload versus download capacity, routing path asymmetry, and load imbalance. Default weights for path optimization are bandwidth 0.2, latency 0.3, reliability 0.35, and load 0.15. Tensor values decay with a half-life of 30 seconds, ensuring stale measurements do not persist. A tensor operations library provides Vector3D and Matrix3x3 arithmetic, and A* pathfinding computes optimal routes through the coordinate space using the tensor-weighted cost function.
 
+The topology serves a dual purpose: routing optimization and tamper evidence. Because shards are distributed to diverse matrix positions and each block commits to its shard distribution (Section 7.1), the matrix forms a 3D hash volume where every node's state is cross-linked to its spatial neighbors through shard evidence. Unlike a Merkle tree with a single root, the Block-MATRIX has no root — integrity emerges from the spatial consistency of overlapping evidence. Corrupting a node requires convincing all its shard holders (14+ independent positions per asset) to update their evidence, and those updates cascade through their own shard neighborhoods. The attack cost scales with the neighborhood size, not the chain depth.
+
 Neighbor tables scale logarithmically: each node maintains detailed information about nearby nodes and progressively sparser information at greater coordinate distances, yielding O(neighbors) memory and O(log n) routing hops. Maximum neighbor count is 128 per node.
 
 Geospatial clustering uses DBSCAN to form a three-level zone hierarchy: Local, Regional, and Global. Over 50 reference locations support GPS-to-matrix coordinate conversion. Zone membership determines replication boundaries, compliance regions, and aggregation domains.
 
-### 6.1 Distribution Pipeline
+### 7.1 Distribution Pipeline
 
 The distribution pipeline processes every asset transfer through four stages in strict order. The ordering is deliberate: compression must precede encryption (encrypted data is incompressible), and encryption must precede sharding (each shard is individually meaningless without the encryption key, but the encryption operates on the whole blob so that key management is per-asset, not per-shard).
 
@@ -189,9 +237,11 @@ The distribution pipeline processes every asset transfer through four stages in 
 
 Retrieval is instruction-based rather than data-based. Instead of transferring raw data, the sender transmits a shard map: the content hash (BLAKE3, 32 bytes), individual shard hashes, matrix positions for each shard, and fallback locations. The instruction payload is under 1 KB regardless of asset size. The receiver queries the nearest matrix positions, fetches shards in parallel from multiple nodes, and reconstructs locally. This inverts the traditional model -- bandwidth cost is borne by the receiver pulling from nearby nodes, not by the sender pushing to a remote destination.
 
-### 6.2 Blockchain Scopes
+**Shard commitment.** After distribution, the node computes a commitment hash: `BLAKE3(sorted shard placements)` where each placement records the shard index, parity flag, target matrix position, and shard data hash. This commitment is stored in the originating block, anchoring the block's hash chain to its spatial shard evidence across the matrix. The commitment creates cross-links between the originating node and every node holding its shards — if the originating block is rewritten, the commitment changes, but the shard evidence at neighboring positions still references the original commitment. This is the mechanism by which the Block-MATRIX provides tamper evidence superior to a traditional Merkle tree: instead of a single root hash, integrity emerges from spatial consistency across overlapping shard evidence at independent matrix positions.
 
-Every node maintains its own sovereign hash chain -- an append-only sequence of entries where each entry contains the operation, a BLAKE3 hash linking to the previous entry, and a FALCON-1024 signature from the node's TrustChain identity. The chain starts on boot with a unique genesis block, requiring no network connectivity. This local blockchain is the foundation of all state verification.
+### 7.2 Blockchain Scopes
+
+Every node maintains its own sovereign hash chain -- an append-only sequence of entries where each entry contains the operation and a BLAKE3 hash linking to the previous entry. Identity attribution comes from the node's TrustChain certificate association, not per-entry signing. The chain starts on boot with a unique genesis block, requiring no network connectivity. This local blockchain is the foundation of all state verification.
 
 Blockchain scope is a binary operating mode:
 
@@ -202,9 +252,9 @@ PrivacyMode (Anonymous/Private/Public) controls who can participate in a network
 
 Cross-network asset transfers require Proof of State verification in both the source and destination networks. Gateway nodes bridge between networks, maintaining partial state from multiple networks and routing cross-network requests based on matrix topology.
 
-The independence of blockchain scope from network privacy (Section 5.1) enables powerful combinations. A Network Scope blockchain communicating over an Anonymous transport provides private group computing with untraceable packets. A Network Scope blockchain over a Public transport provides shared state with full transparency. The two dimensions compose freely.
+The independence of blockchain scope from network privacy (Section 6.1) enables powerful combinations. A Network Scope blockchain communicating over an Anonymous transport provides private group computing with untraceable packets. A Network Scope blockchain over a Public transport provides shared state with full transparency. The two dimensions compose freely.
 
-### 6.3 Asset System
+### 7.3 Asset System
 
 Everything in BlockMatrix is an asset: compute, storage, memory, network bandwidth, GPU cycles, containers, and DNS names. The asset model is defined by three pillars in the canonical type system (hypermesh-lib) and implemented by each layer that manages resources.
 
@@ -228,19 +278,19 @@ All assets are registered in the node's blockchain with a universal AssetId. Res
 Privacy-aware allocation respects the node's configured privacy mode. Anonymous assets have no identity tracking. Private assets are bounded to specific networks. Public assets are fully discoverable. Users control resource allocation percentages, concurrent usage limits, and consensus requirements per asset.
 
 
-## 7. Validation: Proof of State
+## 8. Validation: Proof of State
 
 Global consensus does not scale to large dynamic meshes. Raft requires O(n) messages per state change and assumes stable membership. PBFT requires O(n^2) messages and tolerates at most (n-1)/3 Byzantine faults. In a mesh of 10,000 nodes, a single state change under PBFT would generate on the order of 100 million messages.
 
 HyperMesh replaces global consensus with **Proof of State** -- a bilateral authentication model. The distinction is fundamental: Proof of State does not seek agreement among many parties. It verifies that a specific claim about state is authentic. Something is either authentic or it isn't. There is no voting, no quorum, and no leader election.
 
-Each node maintains its own sovereign hash chain: an append-only sequence of entries where each entry contains the operation, a timestamp, a BLAKE3 hash linking to the previous entry, and a FALCON-1024 signature from the node's TrustChain identity. The chain is tamper-evident -- modifying any entry invalidates all subsequent hashes.
+Each node maintains its own sovereign hash chain: an append-only sequence of entries where each entry contains the operation, a timestamp, and a BLAKE3 hash linking to the previous entry. Identity attribution comes from the node's TrustChain certificate, not per-entry signing -- FALCON-1024 is used at the certificate level (TrustChain CA issuance, STOQ handshake authentication), not per block or per asset. The chain is tamper-evident -- modifying any entry invalidates all subsequent hashes.
 
-Verification is bilateral. When node A needs to verify node B's state (for an asset transfer, workload delegation, or trust evaluation), A requests a segment of B's hash chain covering the relevant period. A checks internal hash consistency, validates the FALCON-1024 signatures, and confirms that the claimed state transitions are consistent with A's own observations. No other nodes need to participate.
+Verification is bilateral. When node A needs to verify node B's state (for an asset transfer, workload delegation, or resource access), A requests a segment of B's hash chain covering the relevant period. A checks internal BLAKE3 hash consistency, confirms that the claimed state transitions are consistent with A's own observations, and verifies B's TrustChain certificate. No other nodes need to participate. There are no reputation scores, no time-decay violation tracking, and no float-based trust levels. Authentication is binary: authentic or not.
 
 Verification depth scales with trust context. A routine transfer between established neighbors requires verification of the most recent 10 chain entries. A node joining a new federation requires full-chain verification. This graduated approach avoids unnecessary work for common operations while maintaining strong guarantees for high-stakes ones.
 
-### 7.1 Four Proofs
+### 8.1 Four Proofs
 
 Each operation requires a Proof of State composed of four independent proofs that together answer the fundamental questions of any state claim:
 
@@ -249,20 +299,40 @@ Each operation requires a Proof of State composed of four independent proofs tha
 - **Proof of Work (WHAT/HOW)**: Verifies the computational capacity the node has demonstrated and the processing performed. Encoded as 32 bytes with hash-meets-difficulty validation at the eBPF layer.
 - **Proof of Time (WHEN)**: Verifies temporal validity -- not expired, not future-dated. Encoded as a Unix-epoch microsecond timestamp (8 bytes) with 5-minute clock skew tolerance and 24-hour maximum age.
 
-The complete Proof of State header is 88 bytes and travels inline with every packet in the HyperMesh extension header. Pre-validation (format checks, difficulty verification, timestamp bounds) happens at kernel speed in the XDP program. Deep cryptographic verification (FALCON-1024 signature validation) happens in userspace through TrustChain, and the results are fed back to the eBPF policy layer to update the node's trust state.
+The complete Proof of State header is 88 bytes and travels inline with every packet in the HyperMesh extension header. Pre-validation (format checks, difficulty verification, timestamp bounds) happens at kernel speed in the XDP program. Deep cryptographic verification (TrustChain certificate validation) happens in userspace, and the results are fed back to the eBPF policy layer to update the node's authentication state.
+
+### 8.2 Capability-Based Verification
+
+Verification in HyperMesh is capability-based: usage IS verification. There are no proactive challenges, no resource type verification polls, and no periodic proof-of-capability requests. A node's capabilities are validated by observing its actual work output. If a node claims 8 GPUs but only delivers throughput consistent with 2, subsequent Proof of Work validations will reflect the actual capacity -- not the claimed capacity. There is no separate mechanism for "catching" overstatement; the bilateral authentication model inherently detects it through observed performance.
+
+Matrix positions are derived from measured network latencies (RTT triangulation), not self-reported. A node cannot claim to be at position (10, 20, 5) if its round-trip times to known reference nodes are inconsistent with that position. Position verification happens naturally through the transport layer -- every STOQ connection provides latency measurements that the matrix can cross-reference.
 
 For high-value transactions, optional witness corroboration adds assurance: witnesses from different BlockMatrix regions independently verify the transaction, providing defense against bilateral collusion. Witness selection uses coordinate diversity to ensure geographic distribution.
 
 The result is that verification cost is proportional to transaction volume, not mesh size. A mesh of 10,000 nodes where 100 transactions occur per second requires verification of 100 transactions per second -- not 100 transactions multiplied by 10,000 nodes. Storage cost for the sovereign hash chain is approximately 200 MB per 1 million entries.
 
+### 8.3 Spatial Verification: PoSPing
 
-## 8. Cryptographic Foundation
+While bilateral hash chain verification (Section 8) detects tampering within a single chain, it cannot detect a node that rewrites its entire chain from genesis. Shard commitments (Section 7.1) create spatial cross-links that make such rewrites detectable, but cross-links are only useful if someone checks them. PoSPing provides the checking mechanism.
+
+PoSPing is a lightweight, epoch-seeded probe protocol that verifies spatial consistency in the Block-MATRIX. Each probe is a "ray cast" into the 3D hash volume: a node queries a target's chain head, shard commitment, and shard map, then cross-checks with shard holders at the claimed positions. The result is binary: consistent or inconsistent.
+
+Probe targets are selected deterministically from epoch entropy: `BLAKE3(epoch_seed || prober_position || epoch_counter)`. This prevents targeted harassment while ensuring uniform coverage of the matrix. Both prober and target can independently verify that a probe was legitimately assigned.
+
+PoSPing respects the two-axis privacy model. The **Scope** axis gates probe access: Unbounded nodes accept probes from any node; Bounded nodes accept probes only from federation members. The **Traceability** axis filters the response: untracked nodes return shard positions without identity attribution; tracked nodes include NodeIds. The commitment hash itself is always verifiable — only the preimage disclosure varies.
+
+The result is that the Block-MATRIX functions as a self-verifying 3D hash field. Each block's shard commitment creates spatial extent (like a Gaussian splat's covariance), PoSPing probes sample the field for consistency (like ray-casting), and the aggregated results (via Engauge) produce a rendered view of verified network capacity. Inconsistencies appear as spatial artifacts — a node whose chain head doesn't match its shard evidence at neighboring positions.
+
+Verification cost remains proportional to probe rate, not mesh size. A mesh of 10,000 nodes with 3 probes per epoch per node generates 30,000 probes per minute — each requiring only a handful of hash comparisons.
+
+
+## 9. Cryptographic Foundation
 
 HyperMesh uses a fixed cipher suite with deliberate separation of concerns. Each cryptographic function is assigned to the layer where its threat model applies.
 
     Function              Algorithm        Layer        Notes
     --------------------  -------------    ----------   --------------------------
-    Signatures            FALCON-1024      TrustChain   NIST Level V, lattice-based
+    Signatures            FALCON-1024      TrustChain   NIST Level V, certificate-level only
     Key exchange          X25519           STOQ         Classical ECDH, FALCON-auth
     Storage encryption    Kyber-1024 KEM   BlockMatrix  Post-quantum, data at rest
     Key derivation        HKDF-SHA512      STOQ         RFC 5869
@@ -271,7 +341,7 @@ HyperMesh uses a fixed cipher suite with deliberate separation of concerns. Each
 
 The separation between transport-layer and storage-layer cryptography is deliberate and reflects different threat models.
 
-**FALCON-1024** secures all identity operations. It provides compact signatures (~1,330 bytes) at NIST's highest security level (Level V, 256-bit security), making it suitable for the mesh's signature-heavy workload. Public keys are 1,793 bytes; secret keys are 2,305 bytes. NIST standardized FALCON (as FN-DSA) alongside ML-DSA (DILITHIUM) in 2024; FALCON was selected for HyperMesh due to its signature compactness. Both Falcon-512 (Level I, 128-bit) and Falcon-1024 (Level V, 256-bit) are supported, with Falcon-1024 as the default.
+**FALCON-1024** secures identity at the certificate level: TrustChain CA issuance, STOQ handshake authentication, and threshold key distribution. It is NOT used per-block, per-entry, or per-asset -- sovereign hash chains use BLAKE3 hash linking for integrity, with identity attribution from TrustChain certificate association. FALCON provides compact signatures (~1,330 bytes) at NIST's highest security level (Level V, 256-bit security). Public keys are 1,793 bytes; secret keys are 2,305 bytes. NIST standardized FALCON (as FN-DSA) alongside ML-DSA (DILITHIUM) in 2024; FALCON was selected for HyperMesh due to its signature compactness. Both Falcon-512 (Level I, 128-bit) and Falcon-1024 (Level V, 256-bit) are supported, with Falcon-1024 as the default.
 
 **Kyber-1024** (ML-KEM) protects stored data through lattice-based key encapsulation. The KEM produces a shared secret from which an AES-256-GCM symmetric key is derived. Encrypted shards may persist on disk for weeks or months -- well within the window where a quantum-capable adversary could mount a harvest-now-decrypt-later attack. Post-quantum encryption for data at rest is therefore a strict requirement. Encryption operates on whole assets before sharding, so key management is per-asset rather than per-shard.
 
@@ -282,7 +352,7 @@ The separation between transport-layer and storage-layer cryptography is deliber
 The cipher suite is not negotiable per-connection. All nodes run the same algorithms. This eliminates downgrade attacks and simplifies verification: a node never needs to check which algorithm was used, only whether the proof is valid.
 
 
-## 9. Applications
+## 10. Applications
 
 **Distributed compute.** Catalog's execution delegation model places workloads on mesh nodes selected by BlockMatrix coordinates. The scheduler evaluates available nodes by distance to required data, current load, available resources, and trust context. Every execution requires Proof of State verification, and results are recorded in the executor's sovereign hash chain, producing an auditable, tamper-evident computation trail. Failover is automatic: when a node fails during computation, the workload migrates to the nearest equivalent node and resumes from the last checkpoint stored through the distribution pipeline.
 
@@ -292,10 +362,10 @@ The cipher suite is not negotiable per-connection. All nodes run the same algori
 
 **Economic interop (Caesar).** Caesar is an optional economic interop bridge for value transfer across the mesh. The CAES token is a purely intermediary exchange medium -- not a store of value. Caesar bridges fiat and cryptocurrency systems through a normalized payment interface. For full protocol details, see the Caesar whitepaper.
 
-**Execution & analytics (Engauge).** Engauge is a planned execution and analytics layer that distributes rewards for paid content hosting and provides privacy-preserving measurement of hosting quality and network performance.
+**Execution & analytics (Engauge).** Engauge provides privacy-preserving network metrics and verification analytics. Four streaming payload types (Capacity, Congestion, Routing, Economic) flow through a differential privacy filter calibrated to each node's privacy mode: Anonymous nodes share nothing, Private nodes share capacity and congestion within their federation, Public nodes share all payloads mesh-wide. A fifth payload type (Verification) carries PoSPing consistency results, enabling RegionalAggregates to report verified capacity — the actual measured and cross-checked capability of a network region, not self-reported claims. Caesar reward eligibility requires Public Engauge participation with passing PoSPing verification.
 
 
-## 10. Implementation
+## 11. Implementation
 
 HyperMesh is implemented in Rust across nine crates with a shared canonical type system. The node ships as a single statically-linked binary with a single TOML configuration file. The project is open source.
 
