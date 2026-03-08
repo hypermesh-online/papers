@@ -237,16 +237,30 @@ The distribution pipeline processes every asset transfer through four stages in 
 
 Retrieval is instruction-based rather than data-based. Instead of transferring raw data, the sender transmits a shard map: the content hash (BLAKE3, 32 bytes), individual shard hashes, matrix positions for each shard, and fallback locations. The instruction payload is under 1 KB regardless of asset size. The receiver queries the nearest matrix positions, fetches shards in parallel from multiple nodes, and reconstructs locally. This inverts the traditional model -- bandwidth cost is borne by the receiver pulling from nearby nodes, not by the sender pushing to a remote destination.
 
-**Shard commitment.** After distribution, the node computes a commitment hash: `BLAKE3(sorted shard placements)` where each placement records the shard index, parity flag, target matrix position, and shard data hash. This commitment is stored in the originating block, anchoring the block's hash chain to its spatial shard evidence across the matrix. The commitment creates cross-links between the originating node and every node holding its shards — if the originating block is rewritten, the commitment changes, but the shard evidence at neighboring positions still references the original commitment. This is the mechanism by which the Block-MATRIX provides tamper evidence superior to a traditional Merkle tree: instead of a single root hash, integrity emerges from spatial consistency across overlapping shard evidence at independent matrix positions.
+**Storage pointers.** Each block entry carries a storage pointer that records where the asset data lives. For locally stored assets the pointer is a path. For distributed assets the pointer contains shard hashes and their matrix placements -- a per-entry commitment anchoring that entry's hash chain to its spatial shard evidence across the matrix. Private or device-scoped assets may have no shards at all (local storage only); sharding is a distribution concern, not a ledger requirement. The commitment creates cross-links between the originating node and every node holding its shards -- if the originating block is rewritten, the entry's content hash changes, but the shard evidence at neighboring positions still references the original hash. Integrity emerges from spatial consistency across overlapping shard evidence at independent matrix positions, not from a single Merkle root.
 
 ### 7.2 Blockchain Scopes
 
-Every node maintains its own sovereign hash chain -- an append-only sequence of entries where each entry contains the operation and a BLAKE3 hash linking to the previous entry. Identity attribution comes from the node's TrustChain certificate association, not per-entry signing. The chain starts on boot with a unique genesis block, requiring no network connectivity. This local blockchain is the foundation of all state verification.
+Every node maintains its own sovereign hash chain. The block structure is:
+
+```
+C = Brotli(A)
+hA = BLAKE3(C)
+π = PoS(A)
+hπ = BLAKE3(π)
+
+Block_i = { prev_hash, entries: [{ hA, hπ, state_proof, ptr }, ...] }
+block_hash_i = BLAKE3(Block_i)
+```
+
+Each block is a batch of asset entries. Each entry carries its own content hash (hA), proof integrity hash (hπ), full four-proof state proof (WHO/WHEN/WHERE/WHAT), and a storage pointer (local path or shard placements). A block has no timestamp, no node coordinate, and no nonce -- temporal ordering lives in the state proof's PoTime, spatial location lives in PoSpace, and same content produces the same hash. The ledger secures integrity; the storage layer holds data.
+
+The chain starts on boot with a genesis block containing the node's initial hardware-assessed assets, requiring no network connectivity. Identity attribution comes from the node's TrustChain certificate association, not per-entry signing.
 
 Blockchain scope is a binary operating mode:
 
 - **Device Scope**: A single node's local chain. Starts on boot, requires nothing external. Every node always runs a Device chain.
-- **Network Scope**: Nodes synchronize their chains to shared state via reflector pooling. Devices in a network either reflect (all devices share the same pool of data) or they don't (purely peer-to-peer).
+- **Network Scope**: Nodes synchronize their chains to shared state via reflector pooling. Devices in a network either reflect (all devices share the same pool of data) or they don't (purely peer-to-peer). For Public networks, spatial hash-bucket filtering (Section 7.4) limits each node's sync responsibility to blocks referencing its matrix neighborhood.
 
 PrivacyMode (Anonymous/Private/Public) controls who can participate in a network. A family sharing devices is a Private (Bounded, tracked) network. A company is a larger Private network. An open community is a Public (Unbounded, tracked) network. Sub-federation -- groups within organizations within federations -- is handled by nesting Private networks, not by separate scope types. The same protocol operates at every level.
 
@@ -276,6 +290,35 @@ Six system adapters are implemented:
 All assets are registered in the node's blockchain with a universal AssetId. Resource allocation uses tensor operations on the Block-MATRIX coordinate space -- the matrix position of available nodes, their measured capabilities, and the tensor-weighted distances all feed into placement decisions.
 
 Privacy-aware allocation respects the node's configured privacy mode. Anonymous assets have no identity tracking. Private assets are bounded to specific networks. Public assets are fully discoverable. Users control resource allocation percentages, concurrent usage limits, and consensus requirements per asset.
+
+### 7.4 Block Synchronization: HashMatrix
+
+Block synchronization strategy depends on blockchain scope and network privacy mode. Three modes cover all cases.
+
+**Device Scope: no sync.** A Device chain is sovereign. It exists on one node, starts on boot, and never leaves. There is nothing to synchronize.
+
+**Network Scope, Private: full replication.** A Private network is a bounded group -- a family, a team, a company. Every node in the group holds the complete chain. When a node appends a block, it broadcasts the block to all peers via reflector pooling. Every peer validates and appends. This is straightforward because Private networks are small by definition (bounded membership). Full replication provides the strongest consistency guarantee: every participant sees exactly the same chain at all times.
+
+**Network Scope, Public: HashMatrix spatial filtering.** Public networks are unbounded. Full replication is not viable -- a mesh of 100,000 nodes cannot require every node to validate every block. HashMatrix solves this by aligning block validation responsibility with shard placement responsibility.
+
+Each block entry's storage pointer (Section 7.1) contains shard hashes and their matrix placements -- actual 3D coordinates in the Block-MATRIX. A node's hash bucket is therefore spatial: it accepts and validates blocks whose entries have shard placements within its matrix neighborhood. If a node holds the shards, it validates the blocks that reference them. This unifies two concerns that other protocols treat separately.
+
+The neighborhood radius adapts to peer density. In dense regions of the matrix (many nodes close together), each node covers a small spatial volume. In sparse regions, a single node covers a larger volume. The adaptation follows octree-like spatial partitioning: the mesh is recursively subdivided until each partition contains a manageable number of nodes. Boundary refinement uses the aggregate of neighboring node positions as the partitioning pivot. The result is self-balancing -- as nodes join a dense area, each node's radius shrinks automatically; as nodes leave, radius grows.
+
+The validation cost per block is O(neighbors), not O(n). A node with 50 matrix neighbors validates blocks from those 50 neighbors, regardless of whether the mesh contains 1,000 or 1,000,000 total nodes. Neighborhood size is bounded by the adaptive radius, not by mesh size.
+
+HashMatrix is consistent with PoSPing (Section 8.3). PoSPing verifies spatial consistency by ray-casting into the 3D hash volume and cross-checking shard evidence at claimed positions. HashMatrix block sync uses the same spatial model -- the same coordinates that determine where shards are placed determine who validates the blocks referencing them. The two mechanisms reinforce each other: HashMatrix ensures local consistency within a neighborhood, PoSPing samples global consistency across neighborhoods.
+
+The matrix operations involved are coordinate distance comparisons, sorted neighbor lists, and radius calculations -- not tensor decompositions or gradient descents. Computational cost is O(n log k) where n is peers considered and k is the square root of nearby peers. No GPU is required.
+
+    Approach                          Validation Cost     Topology-Aware    Shard-Aligned
+    --------------------------------  ------------------  ----------------  ---------------
+    Full replication (Bitcoin, etc.)   O(n) per block      No                N/A
+    Committee sharding (Eth 2.0)      O(committee) random  No                No
+    Hash-range partitioning (DHT)     O(1) per key        No                No
+    HyperMesh HashMatrix              O(neighbors)        Yes               Yes
+
+The key distinction is the final column. In committee-based sharding, the nodes validating a block have no relationship to the nodes storing the data that block references. In hash-range partitioning, keys map to nodes by hash prefix, ignoring network topology entirely. HashMatrix aligns validation with storage and both with spatial locality. A node validates what it stores, stores what is near it, and is near what it can reach quickly.
 
 
 ## 8. Validation: Proof of State
