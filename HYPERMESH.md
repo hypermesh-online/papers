@@ -211,6 +211,74 @@ Network isolation between privacy modes is cryptographic, not logical. Each mode
 
 The privacy model operates on two independent dimensions that are often conflated in other systems. **Network privacy** (the two-axis model above) governs the transport layer: how packets are routed, whether connections are tracked, and what identity is disclosed. **Blockchain scope** (Section 7.2) governs the consensus layer: which nodes participate in state verification. These dimensions are fully orthogonal -- a Private blockchain can communicate over an Anonymous network for maximum security, and a Public blockchain can operate over a Federated network for controlled access.
 
+### 6.2 Identity Lifecycle: Multi-Factor Mesh Authentication
+
+Identity in HyperMesh must satisfy three invariants: it cannot be faked, it can be recovered, and it cannot be stolen. A single cryptographic key satisfies none of these -- keys can be copied (fakeable), lost (unrecoverable), and exfiltrated (stealable). HyperMesh addresses this through multi-factor mesh authentication (MFMA), mapping the three classical authentication factors to mesh-native primitives.
+
+#### 6.2.1 Three Factors
+
+**Something you HAVE: FALCON-1024 private key.** The node's signing key is a possession factor. It is generated at first boot, persisted on disk, and used to sign handshake challenges, state proofs, and key rotation entries. The key can be rotated -- possession of the current key is necessary for authentication but not sufficient.
+
+**Something you KNOW: Recovery passphrase.** At genesis, the node operator provides (or the system generates) a recovery passphrase. The passphrase deterministically derives a recovery key commitment via `recovery_commitment = BLAKE3(HKDF-SHA512(passphrase, salt=node_id))`. This commitment is recorded in the genesis block as part of the `SystemAssetKind::Identity` asset entry. The passphrase is never stored -- only the commitment. The passphrase proves knowledge of a secret established at identity creation time without revealing the secret itself. This is the knowledge factor: something only the legitimate operator knows, independent of any key material on disk.
+
+**Something you ARE: Chain history + hardware fingerprint + peer relationships.** The behavioral identity is the accumulated evidence that cannot be transferred or fabricated:
+
+- **Chain history**: The sovereign hash chain is an append-only record of every block the node has produced, every asset it has registered, every DNS name it has claimed. An attacker cannot retroactively generate a consistent chain -- peers who synced blocks hold independent copies and can detect fabricated history.
+- **Hardware fingerprint**: The genesis block records hardware assessment (R1) -- CPU cores, clock speed, RAM, storage, network interfaces. PoWork validations continuously verify that the node's computational output is consistent with its claimed hardware. A stolen key on different hardware produces inconsistent PoWork.
+- **Peer relationships**: Each bilateral PoS handshake creates a mutual verification record. Over time, a node accumulates a web of peers who have independently verified its identity through the four proofs. This relationship graph cannot be forged -- each peer holds its own record of the verification.
+
+The three factors are independent. Compromise of any single factor is insufficient for identity theft, and loss of any single factor is recoverable through the other two.
+
+#### 6.2.2 Key Rotation
+
+Key rotation is a first-class blockchain operation, not an out-of-band event. A rotation entry is a `BlockAssetEntry` with `SystemAssetKind::KeyRotation` containing:
+
+- `old_pubkey_hash`: BLAKE3 hash of the outgoing FALCON public key
+- `new_pubkey`: The full incoming FALCON-1024 public key (1,793 bytes)
+- `new_kyber_pubkey`: The full incoming Kyber-1024 public key (1,568 bytes)
+- `rotation_signature`: The OLD key signs `BLAKE3(old_pubkey_hash || new_pubkey || new_kyber_pubkey || block_index)`, proving the holder of the old key authorized the transition
+- `reason`: Enum (Scheduled, Compromise, Upgrade, Recovery)
+
+The `node_id` does NOT change on key rotation. After rotation, `node_id` remains `BLAKE3(genesis_falcon_pubkey)` -- the genesis key is the permanent anchor. Verification of a rotated identity requires walking the rotation chain: `genesis_key -> key_2 -> key_3 -> ... -> current_key`, where each transition is signed by the predecessor. This chain is bounded by the number of rotations (typically single digits over a node's lifetime), not by the chain length.
+
+Peers who have bilateral PoS history with a node detect key rotation on the next handshake: the node presents its current key plus a proof that the key is authorized via the rotation chain. The peer verifies the chain back to the genesis key it has on record. If the rotation chain is valid and the other three proofs (PoSpace, PoWork, PoTime) are consistent with historical observations, the peer accepts the new key.
+
+#### 6.2.3 Recovery
+
+Recovery addresses two scenarios: key loss (the node operator can no longer sign with the current key) and data loss (the node's chain is lost from local storage).
+
+**Key loss recovery.** Before keys are lost, the node must have established at least one recovery path:
+
+1. **Passphrase recovery**: The operator provides the recovery passphrase established at genesis. The system derives the commitment and verifies it against the genesis block's `recovery_commitment`. If it matches, the operator can authorize a new keypair. The recovery entry is a special `KeyRotation` with `reason: Recovery` where the `rotation_signature` is replaced by `recovery_proof = BLAKE3(HKDF-SHA512(passphrase, salt=node_id) || new_pubkey)`. Peers verify this against the genesis commitment.
+
+2. **Threshold peer recovery**: The node pre-registers recovery peers by recording a `recovery_peers` entry on its chain: `recovery_commitment_peers = BLAKE3(sorted(recovery_peer_node_ids))` with a threshold `k` (default: 3-of-5). When recovery is needed, `k` of the named peers co-sign an attestation: "We have bilateral PoS history with this node_id and attest that the entity presenting this new key is the same entity." Each attesting peer signs the attestation with their own FALCON key. The recovered node's chain includes the attestation as a `KeyRotation` entry with `reason: Recovery`.
+
+3. **Shamir key backup**: At key creation or rotation, the node splits its FALCON secret key using Shamir's Secret Sharing (3-of-5 over GF(256)) and distributes shares to recovery peers via encrypted channels (Kyber-1024 KEM to each peer's public key). The shares are never stored together. Recovery requires contacting at least 3 of the 5 peers to reconstruct the original key. This is complementary to threshold peer recovery -- it recovers the original key rather than authorizing a new one.
+
+**Data loss recovery.** If the node loses its local chain but retains its keys:
+
+- Peers who participated in Network scope sync hold copies of the node's blocks (or at minimum, block hashes).
+- The node requests its own chain from reflectors via the block fetching protocol (Section 7.5).
+- After reconstruction, the node verifies chain integrity locally (BLAKE3 hash linkage) and resumes normal operation.
+- If both keys and chain are lost, the operator uses passphrase recovery to authorize a new keypair, then fetches the chain from peers.
+
+#### 6.2.4 Theft Prevention
+
+A stolen FALCON private key alone is insufficient for identity theft because bilateral PoS requires all four proofs simultaneously:
+
+- **PoSpace fails**: The attacker is at a different matrix position. Peers who have verified the legitimate node's position will see spatial inconsistency. The attacker cannot claim the same coordinates because RTT triangulation from reference nodes will produce different measurements.
+- **PoWork fails**: The attacker's hardware differs from the genesis assessment. Computational output (benchmarks, hash rates, resource metrics) will not match the hardware fingerprint recorded in the genesis block.
+- **PoTime fails**: Temporal continuity breaks. The legitimate node has an unbroken history of PoTime proofs. The attacker's chain fork starts with a temporal gap -- a discontinuity that peers detect.
+- **Peer relationships fail**: Existing peers have accumulated bilateral verification history with the legitimate node. The attacker has no such history. Even if the attacker initiates new handshakes, the behavioral fingerprint (response patterns, resource availability, chain content) differs.
+
+**Split-brain defense.** If an attacker with a stolen key attempts to rotate keys before the legitimate owner, two competing rotation entries may propagate. HyperMesh resolves this without global consensus: each peer independently decides which fork to trust based on its own bilateral verification history. The legitimate node has years of consistent PoS history; the attacker has none. A peer who has verified the legitimate node 1,000 times will not accept a competing rotation from an entity it has never verified. The legitimate owner needs to reach only one trusted peer to begin propagating the revocation -- the revocation then spreads through the mesh via normal block sync.
+
+**Continuous verification.** Identity is not a one-time gate. Every bilateral PoS handshake re-verifies all four proofs. A compromised key is detected at the next handshake when the other three factors fail to match. This is zero-trust applied to mesh identity: never trust prior authentication, always verify the complete state proof. The MFA model ensures that identity is a continuous property of the node's behavior, not a static credential.
+
+#### 6.2.5 Identity as Asset
+
+The node's identity -- its FALCON and Kyber public keys -- is registered as a `SystemAssetKind::Identity` blockchain asset in the genesis block (R1, R10). This makes identity subject to the same Proof of State verification as any other asset. Key rotation entries are additional `SystemAssetKind::KeyRotation` asset entries on the same chain. The chain itself is the identity: a sovereign, append-only, tamper-evident record of every state transition the node has undergone. The key signs on behalf of the chain, but the chain IS the identity.
+
 
 ## 7. Topology: BlockMatrix
 
