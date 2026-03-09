@@ -1,6 +1,6 @@
 # HyperMesh: A Sovereign Distributed Computing Protocol
 
-**Version 0.2 -- February 2026**
+**Version 0.3 -- March 2026**
 
 **Abstract.** HyperMesh is a distributed computing protocol in which every node is sovereign over its own resources, identity, and state. The protocol replaces global consensus with bilateral Proof of State -- a four-proof authentication model (WHERE, WHO, WHAT, WHEN) that verifies through sovereign hash chains rather than network-wide agreement. All identity operations are secured with NIST-standardized post-quantum cryptography (FALCON-1024 for signatures, Kyber-1024 for encryption), and privacy is configurable along two independent axes at the protocol level. Six composable layers -- from kernel-integrated transport to optional economic interoperability -- communicate through trait-defined interfaces with strict upward dependency. A shared canonical type system ensures every layer speaks the same language. Layer 5 (Caesar) is an optional economic interop bridge (see the Caesar whitepaper), and Layer 6 (Engauge) is an optional execution and analytics layer. The result is a mesh that scales linearly with transaction volume rather than network size, resists quantum-capable adversaries, and permits each participant to choose its own balance between anonymity and accountability.
 
