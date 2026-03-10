@@ -169,11 +169,11 @@ STOQ defines six custom QUIC frame types in the private-use range (`0xfe000001` 
 
 A circular dependency exists between the components required for a fully authenticated connection: TLS certificates require a TrustChain CA, CA discovery requires DNS, DNS registration requires a blockchain block with Proof of State, and block propagation requires a STOQ connection. HyperMesh breaks this cycle by separating encryption from authentication in the bootstrap phase.
 
-**Phase 0 -- Bootstrap.** A new node generates a self-signed certificate using its local TrustChain instance (no CA dependency). QUIC/TLS provides wire encryption; certificate validity is not enforced. The node then opens a bidirectional stream to a bootstrap peer and both sides exchange a JSON handshake containing their matrix coordinate, node ID, and a hex-encoded Proof of State token. The PoS token is validated bilaterally -- each side deserializes the peer's `StateProof`, verifies the four-proof structure, and rejects the connection if validation fails. Proof of State is the trust mechanism; TLS certificates are the encryption mechanism.
+**Phase 0 -- Bootstrap (implemented and verified).** A new node generates a self-signed certificate using its local TrustChain instance (no CA dependency). QUIC/TLS provides wire encryption; certificate validity is not enforced (all non-Public strategies use `AcceptAllVerifier`). The node then opens a bidirectional stream to a bootstrap peer and both sides exchange a flat JSON handshake containing their matrix coordinate, node ID, and a hex-encoded Proof of State token. The PoS token is validated bilaterally -- each side deserializes the peer's `StateProof`, verifies the four-proof structure, and rejects the connection if validation fails. Proof of State is the trust mechanism; TLS certificates are the encryption mechanism. This phase has been tested end-to-end with two independent nodes completing the full handshake sequence.
 
 **Phase 1 -- Connected.** After PoS validation succeeds, nodes are trusted peers. DNS records are registered as blockchain assets, blocks propagate to connected peers, and shards distribute to matrix neighbors. All operations carry inline PoS headers verified at the eBPF layer (format checks) and in userspace (deep cryptographic verification).
 
-**Phase 2 -- Full PKI (future).** Once connected, nodes can request TrustChain-issued certificates from reflector or gateway nodes that serve as distributed CAs. These certificates replace the initial self-signed certificates, enabling strict TLS verification for long-lived connections. DNS resolution transitions from local HashMap to blockchain-backed queries propagated through the mesh.
+**Phase 2 -- Full PKI (future work).** Once connected, nodes can request TrustChain-issued certificates from reflector or gateway nodes that serve as distributed CAs. These certificates replace the initial self-signed certificates, enabling strict TLS verification for long-lived connections. DNS resolution transitions from local HashMap to blockchain-backed queries propagated through the mesh. This phase is not yet implemented -- all current deployments operate with Phase 0 self-signed certificates and Phase 1 PoS-authenticated peer relationships.
 
 This three-phase model ensures that a node can join the network with zero prior trust infrastructure. The minimum bootstrap requirement is a single reachable peer address and a valid Proof of State.
 
@@ -278,6 +278,10 @@ A stolen FALCON private key alone is insufficient for identity theft because bil
 #### 6.2.5 Identity as Asset
 
 The node's identity -- its FALCON and Kyber public keys -- is registered as a `SystemAssetKind::Identity` blockchain asset in the genesis block (R1, R10). This makes identity subject to the same Proof of State verification as any other asset. Key rotation entries are additional `SystemAssetKind::KeyRotation` asset entries on the same chain. The chain itself is the identity: a sovereign, append-only, tamper-evident record of every state transition the node has undergone. The key signs on behalf of the chain, but the chain IS the identity.
+
+Identity is registered as a first-class blockchain asset (`SystemAssetKind::Identity`) in the genesis block. The asset's `definition` field contains the FALCON-1024 public key, `metadata` contains the Kyber-1024 public key, and `config` contains the recovery commitment (`BLAKE3(HKDF-SHA512(passphrase, salt=node_id, info="hypermesh-recovery-v1"))`).
+
+The node's permanent identity (`node_id`) is `BLAKE3(genesis_falcon_pubkey)` -- derived from the genesis FALCON key and never changes, even after key rotation. This ensures that a node's identity in the mesh is stable across key lifecycle events.
 
 
 ## 7. Topology: BlockMatrix
@@ -388,6 +392,46 @@ The matrix operations involved are coordinate distance comparisons, sorted neigh
 
 The key distinction is the final column. In committee-based sharding, the nodes validating a block have no relationship to the nodes storing the data that block references. In hash-range partitioning, keys map to nodes by hash prefix, ignoring network topology entirely. HashMatrix aligns validation with storage and both with spatial locality. A node validates what it stores, stores what is near it, and is near what it can reach quickly.
 
+### 7.5 Block Fetching Protocol
+
+Nodes that fall behind (offline, new join, partition recovery) fetch missing blocks from reflectors or peers via a two-phase pull protocol over STOQ streams:
+
+**Phase 1 -- Sync Discovery**: The requesting node opens a STOQ stream and sends a `SyncRequest` containing its current chain height and head hash. The responder replies with a `SyncResponse` listing block hashes the requester is missing.
+
+**Phase 2 -- Block Fetch**: The requester opens a second STOQ stream with a `BlockFetchRequest` containing the hashes of blocks it needs. The responder serializes each requested block and sends them in a `BlockFetchResponse`. The requester verifies `BLAKE3(block_bytes) == requested_hash` before insertion.
+
+Each fetched block is validated through the standard chain integrity checks (index ordering, previous_hash linkage, per-entry proof verification) before insertion into the local chain. Blocks that fail validation are silently dropped.
+
+The protocol is intentionally simple -- no Merkle proofs or range queries. A node that needs to catch up asks "what do you have that I don't?" and then "send me those blocks." STOQ's QUIC transport handles reliability, ordering, and flow control.
+
+### 7.6 Network Scope Sync Architecture
+
+Network scope blockchains synchronize across participating nodes via three components:
+
+**SyncManager**: Maintains the set of known peers and their reported chain heights. Runs periodic sync rounds (default: 30 seconds) that compare local height against peer heights and initiate block fetching from peers that are ahead.
+
+**ReflectorPool**: A subset of well-connected nodes that serve as block relay points. Reflectors accept blocks from any peer, validate them, and re-propagate to their connected peers. A node joins the reflector pool by announcing availability and maintaining uptime above a configurable threshold.
+
+**Block Propagation**: When a node creates a new block, it announces the block hash to connected peers via `TAG_BLOCK_ANNOUNCE` (push). Peers that receive an announcement for a block they don't have initiate a block fetch (pull). This push-announce/pull-fetch model ensures blocks propagate without requiring every node to maintain connections to every other node.
+
+The sync protocol is scope-aware:
+- **Device scope**: No sync. Chain is local-only.
+- **Network scope**: Full replication within the network. Every participating node holds every block.
+- **Public scope (future)**: HashMatrix spatial filtering -- nodes only replicate blocks whose spatial hash falls within their neighborhood radius.
+
+### 7.7 Metrics Pipeline
+
+BlockMatrix nodes emit capacity metrics to Engauge via UDP datagrams every 30 seconds. Each datagram contains a `MetricsFrame` with:
+- Chain height and block count
+- Connected peer count
+- CPU and memory utilization
+- Shard storage metrics
+- Sequence number for ordering
+
+The UDP push is best-effort with backoff -- if Engauge is unreachable, the node backs off for 10 cycles (~5 minutes) before retrying. This avoids coupling node operation to metrics infrastructure availability.
+
+Engauge aggregates frames from multiple nodes, applies differential privacy filtering (Laplace noise injection calibrated by epsilon), and produces routing intelligence feeds that inform BlockMatrix's tensor-weighted routing decisions.
+
 
 ## 8. Validation: Proof of State
 
@@ -435,6 +479,29 @@ PoSPing respects the two-axis privacy model. The **Scope** axis gates probe acce
 The result is that the Block-MATRIX functions as a self-verifying 3D hash field. Each block's shard commitment creates spatial extent (like a Gaussian splat's covariance), PoSPing probes sample the field for consistency (like ray-casting), and the aggregated results (via Engauge) produce a rendered view of verified network capacity. Inconsistencies appear as spatial artifacts — a node whose chain head doesn't match its shard evidence at neighboring positions.
 
 Verification cost remains proportional to probe rate, not mesh size. A mesh of 10,000 nodes with 3 probes per epoch per node generates 30,000 probes per minute — each requiring only a handful of hash comparisons.
+
+### 8.4 WireSignedProof: Cryptographic State Proof Envelope
+
+State proofs travel between nodes as `WireSignedProof` envelopes that bundle the proof data with a FALCON-1024 signature:
+
+```
+WireSignedProof = {
+    proof_bytes: serialize(StateProof),
+    nonce: random([u8; 32]),
+    signature: FALCON-1024-sign(secret_key, BLAKE3(proof_bytes || nonce)),
+    signer_pubkey: FALCON-1024-public-key
+}
+```
+
+The verification path:
+1. Deserialize the envelope
+2. Recompute `BLAKE3(proof_bytes || nonce)`
+3. Verify the FALCON-1024 signature against `signer_pubkey`
+4. If valid, deserialize inner `proof_bytes` as `StateProof` and validate thresholds
+
+This two-layer design separates identity binding (FALCON signature proves WHO generated the proof) from proof content (four sub-proofs answer WHERE/WHO/WHAT/WHEN). A valid envelope with failing sub-proofs means the node is honest but under-resourced. An invalid envelope means the proof should be discarded entirely.
+
+For backward compatibility during rolling upgrades, validators attempt `WireSignedProof` deserialization first, falling back to raw `StateProof` bytes with a warning.
 
 
 ## 9. Cryptographic Foundation
