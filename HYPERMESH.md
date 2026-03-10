@@ -51,9 +51,9 @@ The design principles (Section 2) produce concrete, testable requirements. Every
 
 **R6. Instruction-based retrieval.** Asset transfer MUST transmit a shard map (content hash, shard hashes, matrix positions, fallback locations) -- not raw data. The receiver reconstructs from the map. Instruction payload MUST remain under 1 KB regardless of asset size.
 
-**R7. Post-quantum storage encryption.** Data at rest MUST be encrypted with a post-quantum KEM (Kyber-1024). Classical-only encryption for stored assets is a protocol violation. Transport-layer key exchange (X25519) is acceptable because session keys are ephemeral.
+**R7. Post-quantum storage encryption.** Data at rest MUST be encrypted with a post-quantum KEM (Kyber-1024). Classical-only encryption for stored assets is a protocol violation. Transport-layer key exchange uses X25519MLKEM768 (hybrid post-quantum: classical X25519 + ML-KEM lattice KEM), making session keys both ephemeral and quantum-resistant.
 
-**R8. Cipher suite policy.** The standard cipher suite (FALCON-1024, Kyber-1024, X25519, AES-256-GCM, BLAKE3) is the default for all networks and non-negotiable on the Public network. Private and Anonymous networks MAY agree on alternative cipher suites between consenting participants. Cross-network communication (via Gateway) always uses the standard suite.
+**R8. Cipher suite policy.** The standard cipher suite (FALCON-1024, Kyber-1024, X25519MLKEM768, AES-256-GCM, BLAKE3) is the default for all networks and non-negotiable on the Public network. Private and Anonymous networks MAY agree on alternative cipher suites between consenting participants. Cross-network communication (via Gateway) always uses the standard suite.
 
 **R9. Privacy-scope independence.** Network privacy (Anonymous/Private/Public) and blockchain scope (Device/Network) MUST be independently configurable. No combination is prohibited. Kernel-level isolation between privacy modes is required via eBPF policy maps.
 
@@ -156,7 +156,7 @@ Proof of State pre-validation occurs at the eBPF layer: format checks, algorithm
 
 ### 5.5 Cryptographic Handshake and Congestion
 
-The cryptographic handshake combines classical and post-quantum primitives. Key exchange uses X25519 elliptic-curve Diffie-Hellman, authenticated by FALCON-1024 lattice-based signatures. Each protocol frame carries a dynamic FALCON key_id, and real signature verification is performed by the FalconTrustChainClient using `pqcrypto_falcon::falcon1024`. Subsequent connections to the same peer use 0-RTT resumption.
+The cryptographic handshake combines classical and post-quantum primitives. Key exchange uses X25519MLKEM768 hybrid post-quantum key exchange (classical X25519 + ML-KEM lattice KEM, via aws-lc-rs), authenticated by FALCON-1024 lattice-based signatures. Each protocol frame carries a dynamic FALCON key_id, and real signature verification is performed by the FalconTrustChainClient using `pqcrypto_falcon::falcon1024`. Subsequent connections to the same peer use 0-RTT resumption.
 
 Congestion control defaults to BBR v2, with CUBIC and NewReno available as alternatives. STOQ's BBR variant maintains per-path state, estimating bottleneck bandwidth and minimum RTT for each unique route. Six network tier profiles (Slow, Home, Standard, Performance, Enterprise, DataCenter) automatically configure buffer sizes and concurrency limits based on measured link capacity, from 256 KB send buffers with 10 concurrent streams on sub-100 Mbps links to 16 MB buffers with 1,000 concurrent streams on 10+ Gbps links.
 
@@ -383,19 +383,19 @@ Every instantiated asset receives an IPv6 address in the HyperMesh ULA prefix (`
 - **Content fingerprint** (BLAKE3 hash of the compressed asset, truncated to fit the address space)
 - **Shard index** (0 through n-1 for individual shard addressing within an erasure-coded asset)
 
-This addressing scheme (R10) makes assets first-class network citizens. A shard is not just a data blob stored on a node -- it has a routable address. Any node in the mesh can reach a specific shard of a specific asset by addressing it directly. The shard index component means that individual shards can be requested without knowing which node currently holds them; the address encodes the content identity, and the reflector pool (Section 7.3.2) resolves the address to a provider.
+This addressing scheme (R10) makes assets first-class network citizens. A shard is not just a data blob stored on a node -- it has a routable address. Any node in the mesh can reach a specific shard of a specific asset by addressing it directly. The shard index component means that individual shards can be requested without knowing which node currently holds them; the address encodes the content identity, and the reflector pool (Section 7.6) resolves the address to a provider.
 
 #### 7.3.2 Asset-Level Trust
 
-TrustChain can issue certificates not only for nodes but also for assets. An asset certificate binds an AssetAddress to three claims:
+Asset-level trust in HyperMesh is provided by the combination of two cryptographic mechanisms -- FALCON-1024 for provenance and Kyber-1024 for access control -- not by per-asset TrustChain certificates. TrustChain issues certificates for nodes (identity); assets inherit trust from the node that created them and the blockchain entry that records them.
 
-- **Provenance**: Which node created the asset (the creator's TrustChain identity and the block index where the asset was registered).
-- **Access policy**: Which nodes or privacy scopes are authorized to fetch the asset's shards. A Public asset has an open policy; a Private asset lists authorized network IDs; an Anonymous asset has no certificate at all.
-- **Integrity**: The asset's content hash (BLAKE3 of the compressed blob before encryption). The certificate commits to this hash, so any recipient can verify that reconstructed content matches the certified original.
+- **Provenance** (FALCON-1024): The creating node's TrustChain identity and the block index where the asset was registered establish who created the asset and when. Because each node's hash chain is tamper-evident (Section 8.1), the block entry itself is the provenance record. FALCON-1024 signs at the node identity level, not per-asset.
+- **Access control** (Kyber-1024 KEM): Encryption IS the access control mechanism. The asset is encrypted as a whole blob with a Kyber-1024 KEM-derived AES-256-GCM key before sharding (Section 7.1). Only holders of the Kyber decryption key can reconstruct the plaintext. A Public asset publishes its key openly; a Private asset distributes the key only to authorized peers; an Anonymous asset uses ephemeral keys with no identity binding.
+- **Integrity** (BLAKE3): The asset's content hash -- `BLAKE3(compressed blob)` -- is recorded in the BlockAssetEntry. Any recipient who reconstructs the asset can verify the hash matches. Content-addressing provides integrity without certificates.
 
-Asset certificates are optional -- they add provenance guarantees on top of the content-addressing integrity that every asset already has. For Public assets that earn Caesar rewards, asset certificates provide the verifiable attribution chain that reward distribution requires: who created the content, when, and that the content has not been altered since certification.
+When shards land on remote nodes, they are stored as BlockAssetEntry records in that node's local chain. The remote node holds encrypted shard data but cannot decrypt it without the Kyber key. This is the enforcement mechanism: possession of shards does not imply access to content. The encryption key, not a certificate, determines who can read the asset.
 
-The certificate is small (AssetAddress + content hash + policy flags + FALCON-1024 signature, approximately 1,500 bytes) and travels with the shard map (R6). A consumer receiving a shard map can verify the asset certificate before fetching any shards, confirming provenance and access rights without downloading the data first.
+For Public assets that earn Caesar rewards, provenance attribution comes from the BlockAssetEntry metadata (creating node ID, block index, content hash) recorded in the blockchain -- not from a separate certificate. The shard map (R6) carries the content hash and creator identity, allowing any consumer to verify provenance by checking the originating node's chain.
 
 ### 7.4 Block Synchronization: HashMatrix
 
@@ -545,7 +545,7 @@ HyperMesh uses a fixed cipher suite with deliberate separation of concerns. Each
     Function              Algorithm        Layer        Notes
     --------------------  -------------    ----------   --------------------------
     Signatures            FALCON-1024      TrustChain   NIST Level V, certificate-level only
-    Key exchange          X25519           STOQ         Classical ECDH, FALCON-auth
+    Key exchange          X25519MLKEM768   STOQ         Post-quantum hybrid (aws-lc-rs), FALCON-auth
     Storage encryption    Kyber-1024 KEM   BlockMatrix  Post-quantum, data at rest
     Key derivation        HKDF-SHA512      STOQ         RFC 5869
     Symmetric encryption  AES-256-GCM      All          256-bit key, 96-bit nonce
@@ -557,7 +557,7 @@ The separation between transport-layer and storage-layer cryptography is deliber
 
 **Kyber-1024** (ML-KEM) protects stored data through lattice-based key encapsulation. The KEM produces a shared secret from which an AES-256-GCM symmetric key is derived. Encrypted shards may persist on disk for weeks or months -- well within the window where a quantum-capable adversary could mount a harvest-now-decrypt-later attack. Post-quantum encryption for data at rest is therefore a strict requirement. Encryption operates on whole assets before sharding, so key management is per-asset rather than per-shard.
 
-**X25519** secures transport-layer key exchange. Session keys are ephemeral and exist only in memory for the duration of a connection. A quantum adversary would need to perform real-time cryptanalysis during the connection lifetime -- a substantially weaker threat model than breaking stored ciphertext offline. Using classical key exchange at the transport layer keeps the handshake small (X25519 adds 32 bytes versus approximately 1,568 bytes for Kyber-1024) and fast (0.12 ms for X25519 key agreement).
+**X25519MLKEM768** secures transport-layer key exchange with a hybrid post-quantum scheme (classical X25519 combined with ML-KEM-768 lattice KEM, provided by aws-lc-rs via rustls). Session keys are ephemeral and exist only in memory for the duration of a connection, and are now quantum-resistant -- eliminating the harvest-now-decrypt-later threat even for intercepted transport sessions. The hybrid approach preserves classical security guarantees while adding lattice-based post-quantum protection.
 
 **BLAKE3** provides integrity hashing throughout the protocol. It produces 32-byte digests, runs approximately 3 times faster than SHA-256, and is inherently parallelizable. Every chunk, every hash chain entry, every Merkle tree node, and every asset hash uses BLAKE3.
 
