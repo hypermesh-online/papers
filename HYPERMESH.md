@@ -1,6 +1,6 @@
 # HyperMesh: A Sovereign Distributed Computing Protocol
 
-**Version 0.3 -- March 2026**
+**Version 0.4 -- March 2026**
 
 **Abstract.** HyperMesh is a distributed computing protocol in which every node is sovereign over its own resources, identity, and state. The protocol replaces global consensus with bilateral Proof of State -- a four-proof authentication model (WHERE, WHO, WHAT, WHEN) that verifies through sovereign hash chains rather than network-wide agreement. All identity operations are secured with NIST-standardized post-quantum cryptography (FALCON-1024 for signatures, Kyber-1024 for encryption), and privacy is configurable along two independent axes at the protocol level. Six composable layers -- from kernel-integrated transport to optional economic interoperability -- communicate through trait-defined interfaces with strict upward dependency. A shared canonical type system ensures every layer speaks the same language. Layer 5 (Caesar) is an optional economic interop bridge (see the Caesar whitepaper), and Layer 6 (Engauge) is an optional execution and analytics layer. The result is a mesh that scales linearly with transaction volume rather than network size, resists quantum-capable adversaries, and permits each participant to choose its own balance between anonymity and accountability.
 
@@ -309,6 +309,18 @@ The distribution pipeline processes every asset transfer through four stages in 
 
 Retrieval is instruction-based rather than data-based. Instead of transferring raw data, the sender transmits a shard map: the content hash (BLAKE3, 32 bytes), individual shard hashes, matrix positions for each shard, and fallback locations. The instruction payload is under 1 KB regardless of asset size. The receiver queries the nearest matrix positions, fetches shards in parallel from multiple nodes, and reconstructs locally. This inverts the traditional model -- bandwidth cost is borne by the receiver pulling from nearby nodes, not by the sender pushing to a remote destination.
 
+**Torrent-like shard distribution.** Shard distribution follows a seeding model, not a push model. The lifecycle has four phases:
+
+1. **Store.** The creator compresses, encrypts, and erasure-codes the asset. Shard hashes and their matrix placements are recorded on-chain in a `BlockAssetEntry`. The shards themselves are offered to the reflector pool -- the on-chain entry records WHAT exists (asset hash, proof hash, state proof, storage pointer), while the reflector pool stores WHERE the data lives. This is the separation of concerns: integrity on-chain, availability off-chain.
+
+2. **Seed.** Reflectors that accept shards become seeders for those shards. Each shard has its own AssetAddress (Section 7.3.1), making it independently routable and fetchable. As an asset grows in popularity, more reflectors hold its shards. The reflector pool for a popular asset grows organically with demand -- this is R12 (swarm scaling) in action: O(log N) per-node load for N concurrent consumers.
+
+3. **Fetch.** A consumer receives a shard map (R6: under 1 KB) listing shard hashes and AssetAddresses. The shard map is the "torrent file" -- a compact instruction set that tells the consumer which shards to pull and where to find them. The consumer fetches shards from any available reflector, not necessarily the origin node. Because only 10 of 14 shards are needed for reconstruction (R5), the consumer can tolerate 4 unavailable seeders without data loss.
+
+4. **Replicate.** After reconstruction, the consumer holds all shards it fetched. It can then serve those shards to other consumers -- the consumer becomes a provider. The reflector pool for the asset expands with every successful retrieval. A file accessed by 1,000 nodes is seeded by up to 1,000 nodes. A file accessed by one node is seeded by one node plus the original reflectors. Availability scales with demand, not with pre-provisioned infrastructure.
+
+The shard map functions as a content manifest: it lists shard hashes (for integrity verification), AssetAddresses (for routing), and fallback locations (for resilience). A consumer that receives a shard map can verify each shard independently -- `BLAKE3(shard_data) == shard_hash` -- without trusting the provider. The combination of content-addressed shards, erasure coding, and consumer-becomes-provider replication produces a distribution system where popular content becomes more available, not less, and where no single node is a bottleneck.
+
 **Storage pointers.** Each block entry carries a storage pointer that records where the asset data lives. For locally stored assets the pointer is a path. For distributed assets the pointer contains shard hashes and their matrix placements -- a per-entry commitment anchoring that entry's hash chain to its spatial shard evidence across the matrix. Private or device-scoped assets may have no shards at all (local storage only); sharding is a distribution concern, not a ledger requirement. The commitment creates cross-links between the originating node and every node holding its shards -- if the originating block is rewritten, the entry's content hash changes, but the shard evidence at neighboring positions still references the original hash. Integrity emerges from spatial consistency across overlapping shard evidence at independent matrix positions, not from a single Merkle root.
 
 ### 7.2 Blockchain Scopes
@@ -361,7 +373,29 @@ Six system adapters are implemented:
 
 All assets are registered in the node's blockchain with a universal AssetId. Resource allocation uses tensor operations on the Block-MATRIX coordinate space -- the matrix position of available nodes, their measured capabilities, and the tensor-weighted distances all feed into placement decisions.
 
-Privacy-aware allocation respects the node's configured privacy mode. Anonymous assets have no identity tracking. Private assets are bounded to specific networks. Public assets are fully discoverable. Users control resource allocation percentages, concurrent usage limits, and consensus requirements per asset.
+Privacy-aware allocation respects the node's configured privacy mode. Anonymous assets have no identity tracking. Private assets are bounded to specific networks. Public assets are fully discoverable. Users control resource allocation percentages, concurrent usage limits, and state proof requirements per asset.
+
+#### 7.3.1 Asset Addressing
+
+Every instantiated asset receives an IPv6 address in the HyperMesh ULA prefix (`fd48:4d00::/32`). The address encodes three pieces of information:
+
+- **Matrix coordinates** (WHERE the asset lives in the topology)
+- **Content fingerprint** (BLAKE3 hash of the compressed asset, truncated to fit the address space)
+- **Shard index** (0 through n-1 for individual shard addressing within an erasure-coded asset)
+
+This addressing scheme (R10) makes assets first-class network citizens. A shard is not just a data blob stored on a node -- it has a routable address. Any node in the mesh can reach a specific shard of a specific asset by addressing it directly. The shard index component means that individual shards can be requested without knowing which node currently holds them; the address encodes the content identity, and the reflector pool (Section 7.3.2) resolves the address to a provider.
+
+#### 7.3.2 Asset-Level Trust
+
+TrustChain can issue certificates not only for nodes but also for assets. An asset certificate binds an AssetAddress to three claims:
+
+- **Provenance**: Which node created the asset (the creator's TrustChain identity and the block index where the asset was registered).
+- **Access policy**: Which nodes or privacy scopes are authorized to fetch the asset's shards. A Public asset has an open policy; a Private asset lists authorized network IDs; an Anonymous asset has no certificate at all.
+- **Integrity**: The asset's content hash (BLAKE3 of the compressed blob before encryption). The certificate commits to this hash, so any recipient can verify that reconstructed content matches the certified original.
+
+Asset certificates are optional -- they add provenance guarantees on top of the content-addressing integrity that every asset already has. For Public assets that earn Caesar rewards, asset certificates provide the verifiable attribution chain that reward distribution requires: who created the content, when, and that the content has not been altered since certification.
+
+The certificate is small (AssetAddress + content hash + policy flags + FALCON-1024 signature, approximately 1,500 bytes) and travels with the shard map (R6). A consumer receiving a shard map can verify the asset certificate before fetching any shards, confirming provenance and access rights without downloading the data first.
 
 ### 7.4 Block Synchronization: HashMatrix
 
@@ -549,7 +583,7 @@ HyperMesh is implemented in Rust across nine crates with a shared canonical type
 
 The implementation is structured to reflect the layered architecture: STOQ provides QUIC transport with eBPF kernel integration and FALCON-1024 cryptography. TrustChain implements the federated certificate authority, Certificate Transparency, and DNS-over-QUIC resolution. BlockMatrix implements the 3D coordinate system, tensor operations, every-node blockchain, geospatial clustering, matrix persistence (write-ahead log with incremental snapshots), and the complete asset system with six resource adapters. Catalog provides the asset package registry with execution delegation. Caesar implements token economics and multi-chain bridging. The eBPF intelligence layer compiles C kernel programs (XDP, kprobe, tracepoint) and manages AF_XDP zero-copy sockets. Gateway provides the HTTP/3 entry point at `trust.hypermesh.online`.
 
-The protocol specification and implementation continue to evolve. This document describes the architecture as designed and implemented in February 2026.
+The protocol specification and implementation continue to evolve. This document describes the architecture as designed and implemented in March 2026.
 
 
 ## References
