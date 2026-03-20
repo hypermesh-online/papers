@@ -333,15 +333,15 @@ The tier system reflects real market microstructure:
 
 Caesar does not enforce KYC/AML, reject transactions based on compliance status, or gate tier access based on identity verification. The protocol is a transport layer. It routes value packets at the appropriate economic tier based on size.
 
-Compliance is the responsibility of the payment adapters at the network boundary. If Stripe requires identity verification, that is Stripe's business. If a Bitcoin HTLC requires nothing, the protocol does not object. Caesar routes the packet either way.
+Compliance is the responsibility of the payment adapters at the network boundary. If a fiat adapter requires identity verification, that is the adapter's business. If a cryptocurrency HTLC requires nothing, the protocol does not object. Caesar routes the packet either way.
 
 ---
 
 ## 8. Network-as-Processor
 
-### 8.1 The Visa Model
+### 8.1 The Network-as-Processor Model
 
-In traditional payment networks, the merchant's bank does not need to be "online" in any meaningful sense when a transaction occurs. The Visa network processes the authorization, and the merchant sees the credit when they next check their account. Settlement happens in batch, asynchronously.
+In traditional payment networks, the merchant's bank does not need to be "online" in any meaningful sense when a transaction occurs. The card network processes the authorization, and the merchant sees the credit when they next check their account. Settlement happens in batch, asynchronously.
 
 Caesar applies this model to the mesh. Every participating node on the Network chain is a payment processor. When an EVP arrives for a verified recipient, any online node can execute the settlement logic — check the recipient's acceptance criteria, apply the fee schedule, credit the account. The recipient does not need to be online.
 
@@ -536,7 +536,7 @@ Fiat and cryptocurrency bridges are **on-ramps and off-ramps**, not the main roa
 - **Ingress**: External value (USD, BTC, ETH) enters the mesh. An adapter locks the external funds and mints an EVP of equivalent gold-gram value.
 - **Egress**: Mesh credits exit to external rails. An adapter burns the EVP and releases external value.
 
-For external bridges, the Visa model applies: egress nodes maintain local liquidity to front settlements, replenished from ingress locks at batch settlement.
+For external bridges, the network-as-processor model applies: egress nodes maintain local liquidity to front settlements, replenished from ingress locks at batch settlement.
 
 ### 13.3 Bootstrap
 
@@ -565,7 +565,7 @@ No trust required. Cryptographic proof at every step.
 
 When fiat rails are involved, full trustlessness is impossible — fiat systems do not produce publicly verifiable proofs. Settlement relies on **attestation**:
 
-1. Egress adapter executes fiat transfer (Stripe charge, bank wire, etc.)
+1. Egress adapter executes fiat transfer (card charge, bank wire, etc.)
 2. Egress node signs an attestation of settlement (adapter confirmation receipt)
 3. Attestation is published to the Network chain
 4. Engauge tracks the egress node's settlement work record — bytes processed, settlements completed, failure rates — as observable capacity metrics
@@ -599,12 +599,10 @@ trait EgressAdapter {
 | Adapter | Rail | Nature |
 |---------|------|--------|
 | MeshCredit | Internal BlockMatrix ledger | Permissionless, instant |
-| Bitcoin | BTC mainnet / Lightning | HTLC-based, trustless |
-| Ethereum | ETH / ERC-20 | Smart contract, trustless |
-| Stripe | Card networks | Consumer fiat, attested |
-| Plaid | Bank ACH | Consumer/business fiat, attested |
-| OpenBanking | SEPA/ACH | Business fiat, attested |
-| Wire | SWIFT/FedWire | Institutional fiat, attested |
+| Cryptocurrency | BTC, ETH, or compatible chains | HTLC or smart contract, trustless |
+| Card | Card networks | Consumer fiat, attested |
+| BankTransfer | ACH / SEPA / Open Banking | Consumer/business fiat, attested |
+| Wire | SWIFT / FedWire | Institutional fiat, attested |
 
 Each adapter handles its own compliance requirements independently. The protocol treats them all identically — they implement the same traits, produce the same proofs, and settle through the same lifecycle.
 
