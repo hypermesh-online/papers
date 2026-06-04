@@ -71,11 +71,17 @@ There is already an address-resolution seam: `stoq_integration.rs:698-704` resol
 ```rust
 // at the node binary / network construction layer (NOT inside stoq):
 let substrate = /* Substrate impl */;
-let addr = substrate.local_address(&node_id).await?;
+let addr = substrate.local_address(&node_id).await?;     // derived fd48:4d00::/32
 let reach = substrate.reachability().await?;
 let config = stoq::TransportConfig {
-    bind_address: addr,
-    public_ipv6: reach.public_v6,
+    // ADVERTISE the derived address, do NOT bind it (Phase A). The ULA is not
+    // assigned to any OS interface until Phase B, so binding it would fail.
+    // STOQ binds `bind_address` only (constructors.rs:218) and advertises
+    // `public_ipv6` (constructors.rs:102 cert SAN; stoq_integration.rs:704).
+    // So set public_ipv6 = derived and leave bind_address as the working default
+    // (UNSPECIFIED/configured). Once Phase B assigns the ULA to a live interface,
+    // bind_address can be switched to the derived address.
+    public_ipv6: reach.public_v6.or(Some(addr)),
     ebpf_interface: None, // Phase B fills this via active_interface(); None keeps current behavior
     ..stoq::TransportConfig::default()
 };
