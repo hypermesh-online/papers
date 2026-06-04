@@ -43,7 +43,7 @@ The design principles (Section 2) produce concrete, testable requirements. Every
 
 **R2. Four-proof authentication.** Every state claim MUST carry a complete Proof of State: Proof of Space (WHERE), Proof of Stake (WHO), Proof of Work (WHAT), Proof of Time (WHEN). Partial proofs are invalid. Authentication is binary -- authentic or not. There are no trust scores, no reputation floats, and no partial validity.
 
-**R3. Pipeline ordering.** Asset data MUST be processed in strict order: Compress (Brotli) -> Encrypt (Kyber-1024 KEM -> AES-256-GCM, whole blob) -> Shard (Reed-Solomon erasure coding) -> Distribute (tensor-weighted placement). Encryption operates on the entire compressed blob before sharding. Per-shard encryption is a protocol violation.
+**R3. Pipeline ordering.** Asset data MUST be processed in strict order: Compress -> Encrypt (Kyber-1024 KEM -> AES-256-GCM) -> Shard (Reed-Solomon erasure coding) -> Distribute (tensor-weighted placement). Compression is content-type-aware: Brotli for small text (<10 MB), Zstd for large or binary data, skip for pre-compressed content (video, audio, archives). For assets exceeding segment size, encryption uses per-segment HKDF-derived keys from a single Kyber-1024 KEM operation (one KEM per asset, BLAKE3-HKDF per segment). Per-shard encryption is a protocol violation -- encryption always precedes sharding.
 
 **R4. Content-addressed deduplication with privacy-scoped tracking.** Shards with identical content (identical BLAKE3 hash) MUST be stored once per storage domain with reference counting. Deduplication tracking is scoped to the privacy boundary: Device scope has full reference tracking, Private networks track within their trust boundary, Anonymous mode stores content-addressed shards but performs no cross-node reference tracking. Tamper detection is inherent in content addressing -- `BLAKE3(data) == expected_hash` -- and does not depend on reference metadata.
 
@@ -67,6 +67,10 @@ The design principles (Section 2) produce concrete, testable requirements. Every
 
 **R14. Adaptive shard sizing.** Erasure coding parameters MUST scale with asset size to keep individual shards within a transfer-efficient range. Post-creation shard splitting is prohibited -- it breaks content-addressing hashes (the shard's BLAKE3 hash is its identity for dedup, bucket assignment, retrieval maps, and block commitment). Wire-level chunking is handled by QUIC stream transfer in the transport layer, not by subdividing the content-addressed unit. Rebalancing MUST NOT require rehashing the network. Shard migration uses copy-then-redirect, not move-then-update. Adaptive sizing MUST NOT cause fault intolerance or throughput bottlenecks.
 
+**R15. Sovereign self-assigned addressing.** A node MUST derive its `fd48:4d00::/32` IPv6 address deterministically and verifiably from its identity: the address interface identifier MUST be a function of `node_id = BLAKE3(falcon_public_key)`. There MUST be no dependence on DHCP, address leases, or any external address authority. Any peer holding the node's FALCON-1024 public key MUST be able to recompute and verify the address. This requirement is the producer for R1's IPv6-addressed network assets and for the transport layer's bind and public-address configuration; addressing the mesh MUST NOT require infrastructure the mesh does not control.
+
+**R16. Link-sovereign interface management.** A node MUST enumerate its own network interfaces and monitor carrier and link state without relying on a hardcoded interface list. On a link-state change (carrier loss, interface up or down), the node MUST re-select an active interface, re-assign its derived address (R15), and signal the transport layer for connection migration. Interface selection MUST degrade gracefully across capability tiers (netlink, then sysfs, then unspecified-bind fallback), mirroring the eBPF capability-tier model (§5.2). A node MUST remain able to manage its own link without an external network daemon.
+
 
 ## 4. Architecture
 
@@ -87,8 +91,12 @@ HyperMesh is composed of six layers, ordered by dependency. Each layer depends o
     +------------------------------------------------------+
     |  0. OS/Kernel     Linux, eBPF/XDP, AF_XDP             |
     +------------------------------------------------------+
+    |  S. Substrate     Self-assigned addr, link/carrier    |
+    +------------------------------------------------------+
     |  *  hypermesh-lib  Shared canonical types              |
     +------------------------------------------------------+
+
+Beneath the kernel sits the Substrate (layer S), which owns the network reality the kernel itself assumes: a sovereign, self-assigned IPv6 address derived from node identity; an enumerated, carrier-monitored interface (not a borrowed DHCP lease); and a known reachability path. The Substrate is what makes HyperMesh a network that does not depend on the incumbent's addressing or link management — see the Substrate whitepaper (SUBSTRATE.md) for protocol details. It produces the address space mandated by R1 and the self-assignment and interface management mandated by R15 and R16.
 
 Layer 0 is the operating system kernel, where eBPF programs run at the XDP (eXpress Data Path) hook point and AF_XDP sockets provide zero-copy packet I/O. Layer 1 (STOQ) provides authenticated, multiplexed byte streams over QUIC and IPv6 with kernel-accelerated packet processing. Layer 2 (TrustChain) overlays identity, certificates, and privacy classification onto those streams. Layer 3 (BlockMatrix) assigns spatial coordinates, computes tensor-weighted routes, manages geospatial clusters, and validates state through sovereign hash chains using four-proof Proof of State. Layer 4 (Catalog) defines asset types, maintains a discovery registry, and delegates execution to mesh nodes. Layer 5 (Caesar) is an optional economic interop bridge that enables value transfer across the mesh and bridges to external payment systems (see the Caesar whitepaper for protocol details). Layer 6 (Engauge) is a planned execution and analytics layer for paid content hosting and network metrics.
 
@@ -96,6 +104,9 @@ Cross-layer communication occurs through Rust trait boundaries:
 
     Boundary                  Interface            Data Exchanged
     -----------------------   ------------------   ----------------------------
+    Substrate -> OS           SubstrateView        Self-assigned IPv6, active
+                                                    interface + carrier state,
+                                                    reachability hints
     OS -> STOQ                eBPF/XDP hooks       Raw packets via AF_XDP,
                                                     policy maps, flow metadata
     STOQ -> TrustChain        TransportStream      Authenticated byte streams
@@ -311,7 +322,7 @@ Retrieval is instruction-based rather than data-based. Instead of transferring r
 
 **Torrent-like shard distribution.** Shard distribution follows a seeding model, not a push model. The lifecycle has four phases:
 
-1. **Store.** The creator compresses, encrypts, and erasure-codes the asset. Shard hashes and their matrix placements are recorded on-chain in a `BlockAssetEntry`. The shards themselves are offered to the reflector pool -- the on-chain entry records WHAT exists (asset hash, proof hash, state proof, storage pointer), while the reflector pool stores WHERE the data lives. This is the separation of concerns: integrity on-chain, availability off-chain.
+1. **Store.** The creator compresses, encrypts, and erasure-codes the asset. Shard hashes and their matrix placements are recorded on-chain in a `BlockAssetEntry`. The shards themselves are offered to the reflector pool -- the on-chain entry records WHAT exists (asset hash, proof hash, state proof, storage pointer), while the reflector pool stores WHERE the data lives. This is the separation of concerns: integrity on-chain, availability off-chain. Blocks propagate to nodes participating in that asset's distribution -- reflectors that accepted shards and consumers that fetched them -- not to all connected peers. The propagation follows the torrent model: only nodes with a stake in the content (storage or consumption) receive block announcements for it.
 
 2. **Seed.** Reflectors that accept shards become seeders for those shards. Each shard has its own AssetAddress (Section 7.3.1), making it independently routable and fetchable. As an asset grows in popularity, more reflectors hold its shards. The reflector pool for a popular asset grows organically with demand -- this is R12 (swarm scaling) in action: O(log N) per-node load for N concurrent consumers.
 
@@ -337,7 +348,7 @@ Block_i = { prev_hash, entries: [{ hA, hπ, state_proof, ptr }, ...] }
 block_hash_i = BLAKE3(Block_i)
 ```
 
-Each block is a batch of asset entries. Each entry carries its own content hash (hA), proof integrity hash (hπ), full four-proof state proof (WHO/WHEN/WHERE/WHAT), and a storage pointer (local path or shard placements). A block has no timestamp, no node coordinate, and no nonce -- temporal ordering lives in the state proof's PoTime, spatial location lives in PoSpace, and same content produces the same hash. The ledger secures integrity; the storage layer holds data.
+Each block is a batch of asset entries. Each entry carries its own content hash (hA), proof integrity hash (hπ), full four-proof state proof (WHO/WHEN/WHERE/WHAT), and a storage pointer (local path or shard placements). A block has no timestamp, no node coordinate, and no nonce -- temporal ordering lives in the state proof's PoTime, spatial location lives in PoSpace, and same content produces the same hash. The ledger secures integrity; the storage layer holds data. SystemAssets -- DNS records, identity bindings, certificate associations -- carry their data inline in the block entry, since their payloads are small and must be available without a distribution pipeline. User assets (files, media, application data) use the full pipeline: compress, encrypt, shard, distribute, with only a storage pointer recorded on-chain.
 
 The chain starts on boot with a genesis block containing the node's initial hardware-assessed assets, requiring no network connectivity. Identity attribution comes from the node's TrustChain certificate association, not per-entry signing.
 
@@ -446,7 +457,7 @@ Network scope blockchains synchronize across participating nodes via three compo
 
 **ReflectorPool**: A subset of well-connected nodes that serve as block relay points. Reflectors accept blocks from any peer, validate them, and re-propagate to their connected peers. A node joins the reflector pool by announcing availability and maintaining uptime above a configurable threshold.
 
-**Block Propagation**: When a node creates a new block, it announces the block hash to connected peers via `TAG_BLOCK_ANNOUNCE` (push). Peers that receive an announcement for a block they don't have initiate a block fetch (pull). This push-announce/pull-fetch model ensures blocks propagate without requiring every node to maintain connections to every other node.
+**Block Propagation**: When a node creates a new block, it announces the block hash to peers actively participating in that content's distribution -- reflectors holding its shards and consumers that have fetched them -- via `TAG_BLOCK_ANNOUNCE` (push). Peers that receive an announcement for a block they don't have initiate a block fetch (pull). This push-announce/pull-fetch model ensures blocks propagate to interested parties without requiring broadcast to all connected peers. In Private networks, all members are participants by definition, so announcements reach the full bounded group. In Public networks, HashMatrix spatial filtering (Section 7.4) limits announcement propagation to nodes whose matrix neighborhood overlaps the block's shard placements.
 
 The sync protocol is scope-aware:
 - **Device scope**: No sync. Chain is local-only.
