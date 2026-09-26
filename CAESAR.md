@@ -9,9 +9,9 @@
 
 Caesar (CAES) is a high-frequency value transport protocol designed for the HyperMesh Block-MATRIX network. Unlike conventional cryptocurrency tokens that function as stores of value, Caesar treats value as a **fluid under pressure** — born at ingress, routed through the mesh, and extinguished at egress. This ephemeral model achieves thermodynamic consistency (zero inflation), eliminates the stored-value paradox inherent in sovereign mesh networks, and enables autonomous payment settlement without requiring either party to be online.
 
-Caesar denominates value in gold-grams as a stable unit of account. The protocol does not defend a peg; instead, it observes an effective price composite emerging from network fees, speculation pressure, and in-flight liquidity shadow — value currently in-transit that is temporarily unavailable at either end. A PID-based Governor engine adjusts fees, demurrage rates, and routing economics through tier-specific multipliers, with hard fee caps that constitute constitutional protocol limits. The Engauge feedback loop continuously observes network activity patterns — distinguishing organic resource consumption from speculative traffic — and feeds these metrics back to the Governor, creating a self-correcting economic cycle where the effective CAES rate is an emergent property, never a controlled variable.
+Caesar denominates value in gold-grams as a stable unit of account. The protocol does not defend a peg; instead, it observes an effective price composite emerging from network fees, speculation pressure, and in-flight liquidity shadow — value currently in-transit that is temporarily unavailable at either end. A PID-based Governor engine adjusts fees, demurrage rates, and routing economics through tier-specific multipliers, with hard fee caps that constitute constitutional protocol limits. The NGauge (N - Gauge reflective metrics) feedback loop continuously observes network activity patterns across the total set $N$ — distinguishing organic resource consumption from speculative traffic — and feeds these metrics back to the Governor, creating a self-correcting economic cycle where the effective CAES rate is an emergent property, never a controlled variable.
 
-Routing decisions use capacity-based metrics exclusively — geographic distance, buffer capacity, response latency, bandwidth availability — with no trust scores, reputation systems, or consensus on node quality. The protocol is regulation-agnostic: compliance is delegated to payment adapters at the network boundary, while KYC attestation is stored self-sovereignly on each operator's Device blockchain.
+Routing decisions use capacity-based metrics exclusively — geographic distance, buffer capacity, response latency, bandwidth availability — with no trust scores, reputation systems, or consensus on node quality. The protocol is regulation-agnostic: compliance is delegated to payment adapters at the network boundary, while KYC attestation is stored self-sovereignly in each operator's Device Identity asset chain.
 
 The result is a self-balancing liquidity network where every participating node operates as an autonomous payment processor, value cannot become permanently stuck, and the mesh economy is driven by real resource consumption rather than speculation.
 
@@ -190,13 +190,13 @@ Aggregate buy/sell flow through ingress and egress creates directional pressure 
 
 At any moment, some quantity of value is in-flight — EVPs that have been minted but not yet settled. This is the **liquidity shadow**: if $10M of value is currently in-transit, that $10M is temporarily unavailable at either end. It has left the sender's external rail but has not yet arrived at the receiver's. This float affects effective liquidity throughout the network and thus affects effective pricing. High in-transit float relative to total network capacity tightens available liquidity; low float means the network is liquid and responsive.
 
-The composite of these three forces — network fees, speculation pressure, and in-transit float — creates the **observed effective rate**. The protocol does not fight this rate. It does not attempt to push the rate back toward gold spot through market interventions. Instead, the observed rate is fed into Engauge, which analyzes the underlying activity patterns and passes its analysis to the Governor. The Governor's response changes the economics, which changes market behavior, which changes the observed rate. This is a feedback loop, not a peg defense.
+The composite of these three forces — network fees, speculation pressure, and in-transit float — creates the **observed effective rate**. The protocol does not fight this rate. It does not attempt to push the rate back toward gold spot through market interventions. Instead, the observed rate is fed into NGauge, which analyzes the underlying activity patterns through localized reflection across nodes and passes its analysis to the Governor. The Governor's response changes the economics, which changes market behavior, which changes the observed rate. This is a feedback loop, not a peg defense.
 
 ### 5.2 Oracle Interface
 
 The Governor ingests real-time gold price data (XAU/USD) from external oracles. The oracle interface is a trait — implementations can range from centralized price feeds (for bootstrap) to decentralized oracle networks (at scale). The protocol does not depend on any specific oracle provider.
 
-### 5.3 The Engauge-Governor Feedback Loop
+### 5.3 The NGauge-Governor Feedback Loop
 
 The effective CAES rate is an emergent property of the following continuous loop:
 
@@ -205,14 +205,14 @@ Network State (congestion, capacity, velocity, in-flight float)
     → Governor fee/demurrage adjustment (per tier, via tier multipliers)
         → Effective cost of moving value (the observable "spread")
             → Market participants respond (more/less traffic, ingress/egress shifts)
-                → Engauge observes activity patterns (organic vs speculative)
-                    → Engauge feeds metrics back to Governor
+                → NGauge observes activity patterns (organic vs speculative)
+                    → NGauge feeds metrics back to Governor
                         → Governor re-adjusts
                             → Network state changes
                                 → Loop continues
 ```
 
-The protocol observes the effective rate, reports it, and uses it for diagnostics and Governor input — but never fights it. There is no target rate. There is no stabilization mechanism. There is only a self-correcting economic system where the Governor's adjustments influence the rate indirectly through their effect on network economics, and the rate's movement informs the Governor's next adjustment through Engauge's analysis.
+The protocol observes the effective rate, reports it, and uses it for diagnostics and Governor input — but never fights it. There is no target rate. There is no stabilization mechanism. There is only a self-correcting economic system where the Governor's adjustments influence the rate indirectly through their effect on network economics, and the rate's movement informs the Governor's next adjustment through NGauge's analysis.
 
 This is a critical distinction from algorithmic stablecoins, which fail because they attempt to control a variable (price) that is determined by forces outside their control (market sentiment, liquidity depth, external shocks). Caesar observes the variable and adapts the system's parameters in response, allowing the rate to find its own equilibrium — an equilibrium that, under healthy network conditions with organic traffic dominating, naturally gravitates toward gold parity because the underlying denomination is gold and the fee overhead is small.
 
@@ -249,7 +249,7 @@ The in-transit float variable allows the Governor to respond to the aggregate li
 
 ### 6.3 Response to Network Conditions
 
-The Governor responds to observable network conditions. It does not defend a peg or fight market forces. It adapts the system's economic parameters based on what Engauge reports:
+The Governor responds to observable network conditions. It does not defend a peg or fight market forces. It adapts the system's economic parameters based on what NGauge reports:
 
 | Condition | Governor Response |
 |-----------|------------------|
@@ -257,8 +257,8 @@ The Governor responds to observable network conditions. It does not defend a peg
 | **Low utilization** | Decrease fees to reduce friction, reduce demurrage to encourage holding and allow packets more settlement time |
 | **High external volatility (gold price swings)** | Widen ingress/egress spread to buffer external shocks, insulating the mesh from rapid gold-price oscillation |
 | **Liquidity crisis (high in-flight float relative to egress capacity)** | Reduce demurrage (give packets more time to find egress), activate surge pricing on new ingress to throttle inflow |
-| **High speculative ratio (Engauge detects low organic activity + high velocity)** | Increase fees on non-organic traffic patterns, increase verification complexity for suspicious flow patterns |
-| **High organic ratio (Engauge detects real resource consumption driving traffic)** | Relax fees to reduce friction on productive activity, reduce verification complexity for established organic patterns |
+| **High speculative ratio (NGauge detects low organic activity + high velocity)** | Increase fees on non-organic traffic patterns, increase verification complexity for suspicious flow patterns |
+| **High organic ratio (NGauge detects real resource consumption driving traffic)** | Relax fees to reduce friction on productive activity, reduce verification complexity for established organic patterns |
 
 ### 6.4 Hydraulic Load Balancing
 
@@ -415,11 +415,11 @@ This is account opening. After setup, the account is live 24/7 regardless of the
 
 ### 9.1 The Model
 
-Governments will likely require KYC/AML for any Engauge or Caesar operator. Caesar anticipates this requirement while preserving user sovereignty.
+Governments will likely require KYC/AML for any NGauge or Caesar operator. Caesar anticipates this requirement while preserving user sovereignty.
 
 - **KYC data** lives on the operator's Device chain. It never leaves the device. The data is sovereign — the user owns it, stores it, controls access to it.
 - **The Network chain** sees only an **attestation** — a TrustChain certificate that states: "This node is KYC-verified. Authority: [issuer]. Expiry: [date]." The certificate contains no personal data.
-- **Engauge** preserves the attestation for routing and settlement decisions without ever accessing the underlying documents.
+- **NGauge** preserves the attestation for routing and settlement decisions without ever accessing the underlying documents.
 
 ### 9.2 Privacy Guarantees
 
@@ -462,12 +462,12 @@ When both the sender and receiver abandon a transaction — both accounts fail, 
 Not all shard-holding nodes are eligible for gravity bonuses. Qualification is binary — a node either meets ALL of the following objective criteria or it does not. There are no scores, no rankings, no partial qualification:
 
 - **UPI integration active** — the node participates in the payment network
-- **Engauge governor running** — the node contributes to network metrics and routing
+- **NGauge governor running** — the node contributes to network metrics and routing
 - **KYC/AML attestation valid** — the operator has completed verification (current, non-expired)
 - **Demonstrable capacity** — Proof of Space, bandwidth, and compute that meets minimum thresholds
 - **Active routing participation in current epoch** — the node has routed traffic in the current settlement epoch
 
-No trust scores, reputation systems, or consensus-based qualification. Nodes either meet the objective criteria or they do not. Qualification is verified computationally against on-chain attestations and Engauge work records — no node votes on another node's eligibility.
+No trust scores, reputation systems, or consensus-based qualification. Nodes either meet the objective criteria or they do not. Qualification is verified computationally against on-chain attestations and NGauge work records — no node votes on another node's eligibility.
 
 Unqualified nodes' shares redistribute to qualified ones. This incentivizes full-stack participation and compliance — operators choose to meet these requirements because it's economically advantageous, not because the protocol demands it.
 
@@ -568,7 +568,7 @@ When fiat rails are involved, full trustlessness is impossible — fiat systems 
 1. Egress adapter executes fiat transfer (card charge, bank wire, etc.)
 2. Egress node signs an attestation of settlement (adapter confirmation receipt)
 3. Attestation is published to the Network chain
-4. Engauge tracks the egress node's settlement work record — bytes processed, settlements completed, failure rates — as observable capacity metrics
+4. NGauge tracks the egress node's settlement work record — bytes processed, settlements completed, failure rates — as observable capacity metrics
 
 Fiat settlement includes a **hold period** before finalization, matching the chargeback window of the underlying rail (e.g., 120 days for card transactions). During this window, the settlement can be reversed if the fiat transaction is disputed.
 
@@ -608,21 +608,22 @@ Each adapter handles its own compliance requirements independently. The protocol
 
 ---
 
-## 16. Engauge Integration
+## 16. NGauge Integration
 
 ### 16.1 Role
 
-Engauge is the **traffic controller** of the HyperMesh network. In the context of Caesar, Engauge provides:
+**NGauge (N - Gauge)** is the gauge for the total set $N$, measuring $n$ for every $n \in N$. It provides localized metrics, reflection-based routing intelligence, work verification, capacity tracking, and network analytics without centralized coordination or global consensus voting. A collection of localized states produces the global state collectively through reflection. In the context of Caesar, NGauge provides:
 
-- **Routing Intelligence**: Mapping network topology, congestion, and capacity to calculate optimal EVP routes
+- **Routing Intelligence**: Mapping network topology, congestion, and capacity to calculate optimal EVP routes via tensor vector alignment
 - **Work Verification**: Tracking bytes relayed, compute delivered, and storage committed per node per transaction
 - **Proof of Useful Work**: Linking routing rights to demonstrated capacity, preventing Sybil attacks on fee collection
 - **Governor Data Feed**: Providing the real-time network metrics that the Governor uses to adjust economic parameters
 - **Organic vs Speculative Detection**: Classifying traffic patterns to distinguish real resource consumption from wash trading and manipulation
+- **Erasure Coding Authority**: Regulating Reed-Solomon parameter thresholds ($k$-of-$n$) and sharding metrics across the network
 
 ### 16.2 Anti-Sybil Mechanism
 
-A malicious actor cannot spin up thousands of lightweight nodes to steal routing fees because Engauge tracks **actual work delivered** — bytes served, compute cycles completed, storage maintained. This is Proof-of-Useful-Work: a node's routing rights are proportional to demonstrated CAPACITY, not identity count. It does not matter how many node identities an actor controls; what matters is the aggregate work those nodes perform.
+A malicious actor cannot spin up thousands of lightweight nodes to steal routing fees because NGauge tracks **actual work delivered** — bytes served, compute cycles completed, storage maintained. This is Proof-of-Useful-Work: a node's routing rights are proportional to demonstrated CAPACITY, not identity count. It does not matter how many node identities an actor controls; what matters is the aggregate work those nodes perform.
 
 Concretely: if an attacker creates 1,000 minimal nodes, each with negligible storage and bandwidth, those nodes collectively demonstrate negligible capacity. They receive negligible routing traffic. They earn negligible fees. The attack is economically irrational because the cost of running 1,000 nodes exceeds the revenue they can capture. Meanwhile, a single well-provisioned node with substantial storage, bandwidth, and compute captures traffic proportional to its demonstrated capacity.
 
@@ -630,7 +631,7 @@ No trust scores, reputation systems, or consensus-based qualification. Routing r
 
 ### 16.3 Vector Routing
 
-Engauge calculates EVP routes using the Block-MATRIX coordinate space:
+NGauge calculates EVP routes using the Block-MATRIX coordinate space:
 
 1. **Linear Projection**: Draw a vector from source (A) to destination (B) in 3D matrix space
 2. **Interpolation**: Select nodes along this vector as shard carriers
@@ -641,24 +642,24 @@ Shards flow around obstacles like water around rocks. The Governor's hydraulic l
 
 ### 16.4 Reward Distribution
 
-After settlement, Engauge's work ledger determines fee distribution:
+After settlement, NGauge's work ledger determines fee distribution:
 
 - Each transit node's contribution is measured (bytes relayed, time held, route difficulty)
 - Fees are split proportionally from the pre-calculated fee schedule
 - Distribution happens post-settlement as small CAES credits on the Network chain
 - Nodes that carried shards for failed (refunded) EVPs still earn for the bytes they moved
 
-Reward qualification is binary and based on the same objective criteria used throughout the protocol. No trust scores, reputation systems, or consensus-based qualification. Nodes either meet the objective criteria — UPI integration active, Engauge governor running, KYC attestation valid, demonstrable capacity, active routing participation in current epoch — or they do not.
+Reward qualification is binary and based on the same objective criteria used throughout the protocol. No trust scores, reputation systems, or consensus-based qualification. Nodes either meet the objective criteria — UPI integration active, NGauge governor running, KYC attestation valid, demonstrable capacity, active routing participation in current epoch — or they do not.
 
 ### 16.5 Organic vs Speculative Detection
 
-Engauge classifies traffic patterns using its activity analysis framework to distinguish organic resource consumption from speculative manipulation:
+NGauge classifies traffic patterns using its activity analysis framework to distinguish organic resource consumption from speculative manipulation:
 
-**High Engauge activity index + high velocity = organic traffic.** Real resource consumption — GPU cycles purchased, storage allocated, bandwidth consumed — generates high activity (many distinct resource types, many distinct counterparties, geographically distributed) with high velocity (value moves quickly because resources are being actively consumed). When Engauge detects this pattern, the Governor relaxes fees and reduces verification complexity, reducing friction on productive activity.
+**High NGauge activity index + high velocity = organic traffic.** Real resource consumption — GPU cycles purchased, storage allocated, bandwidth consumed — generates high activity (many distinct resource types, many distinct counterparties, geographically distributed) with high velocity (value moves quickly because resources are being actively consumed). When NGauge detects this pattern, the Governor relaxes fees and reduces verification complexity, reducing friction on productive activity.
 
-**Low Engauge activity index + high velocity = speculative traffic.** Wash trading, circular routing, and manipulation generate low activity diversity (same counterparties, same value cycling, concentrated geography) with high velocity (value moves quickly because it is being churned). When Engauge detects this pattern, the Governor increases fees on the suspicious traffic patterns and increases verification complexity, making manipulation economically irrational.
+**Low NGauge activity index + high velocity = speculative traffic.** Wash trading, circular routing, and manipulation generate low activity diversity (same counterparties, same value cycling, concentrated geography) with high velocity (value moves quickly because it is being churned). When NGauge detects this pattern, the Governor increases fees on the suspicious traffic patterns and increases verification complexity, making manipulation economically irrational.
 
-This is **computational AML** — pattern detection on observable network metrics, not identity-based checks. The protocol does not know or care who is sending the traffic. It observes WHAT the traffic looks like: its diversity, its geographic distribution, its resource consumption footprint, its counterparty concentration. Speculative traffic is expensive not because the sender is flagged, but because the traffic pattern itself triggers higher fees through the Governor's response to Engauge's analysis.
+This is **computational AML** — pattern detection on observable network metrics, not identity-based checks. The protocol does not know or care who is sending the traffic. It observes WHAT the traffic looks like: its diversity, its geographic distribution, its resource consumption footprint, its counterparty concentration. Speculative traffic is expensive not because the sender is flagged, but because the traffic pattern itself triggers higher fees through the Governor's response to NGauge's analysis.
 
 The detection is probabilistic and operates on aggregate flow patterns, not individual transactions. A single transaction cannot be "flagged" as speculative; rather, a sustained pattern of traffic that matches speculative characteristics causes the Governor to adjust fees in the affected network regions. Organic traffic in the same regions benefits from the same fee environment — the response is to the pattern, not to the actor.
 
@@ -713,19 +714,19 @@ Caesar occupies Layer 5 in the HyperMesh protocol stack:
 | **L3** | BlockMatrix Assets | Asset registration, adapters, pipeline (compress→encrypt→shard→distribute) |
 | **L4** | Catalog | Asset packages, execution delegation |
 | **L5** | **Caesar** | **Value transport, settlement, economic governance** |
-| **L6** | Engauge | Routing intelligence, work verification, network metrics |
+| **L6** | NGauge | Routing intelligence, work verification, localized reflection (total set N) |
 
 ### 18.1 Layer Independence
 
-Caesar operates independently of transport-layer privacy. PrivacyMode (Anonymous, Private, Public) is a STOQ concern. BlockchainScope (Device, Network) is a consensus concern. Caesar runs on top of both, agnostic to the combination:
+Caesar operates independently of transport-layer privacy. PrivacyMode (Anonymous, Private, Public) is a STOQ concern. Storage indexing scope (Device, Network) is an asset visibility concern. Caesar runs on top of both, agnostic to the combination:
 
 | Combination | Effect |
 |-------------|--------|
-| Device chain + Anonymous transport | Local payments, fully untraceable |
-| Device chain + Private transport | Local payments, visible to bounded group |
-| Network chain + Anonymous transport | Mesh-wide settlement, untraceable packets |
-| Network chain + Private transport | Group settlement with identity (family, company) |
-| Network chain + Public transport | Open settlement, full transparency |
+| Device index + Anonymous transport | Local payments, fully untraceable |
+| Device index + Private transport | Local payments, visible to bounded group |
+| Network index + Anonymous transport | Mesh-wide settlement, untraceable packets |
+| Network index + Private transport | Group settlement with identity (family, company) |
+| Network index + Public transport | Open settlement, full transparency |
 
 ### 18.2 Asset Pipeline Reuse
 
@@ -744,7 +745,7 @@ Caesar resolves the sovereignty-consensus paradox by eliminating the need for co
 - **Self-sovereign identity** through Device-chain KYC with Network-chain attestation
 - **Self-balancing economics** through the hydraulic Governor with constitutional fee caps
 - **Capacity-based routing** through locally observable metrics — no trust scores, no reputation, no consensus on subjective quality
-- **Emergent price discovery** through the Engauge-Governor feedback loop — observed, reported, never fought
+- **Emergent price discovery** through the NGauge-Governor feedback loop — observed, reported, never fought
 - **Computational AML** through organic vs speculative traffic detection — pattern-based, not identity-based
 
 The mesh becomes a global, self-balancing liquidity network where every node is an autonomous payment processor, value flows like fluid toward equilibrium, and the economy is driven by real resource consumption rather than speculation. The effective CAES rate emerges from the interaction of network fees, speculation pressure, and in-transit liquidity shadow — an emergent property of the system, not a controlled variable.

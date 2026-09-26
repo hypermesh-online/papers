@@ -19,7 +19,7 @@ The stack is **complete** — the architecture is not missing a layer. What was 
 **orchestration control plane wired to the dataplane**. The components below already exist;
 the gap is the wiring between them.
 
-> **Naming note:** the crate on disk is `engauge/`; the project refers to it as **NGauge**.
+> **Naming note:** the crate on disk is `ngauge/`; the project refers to it as **NGauge** (the gauge for total set $N$).
 
 ---
 
@@ -27,7 +27,7 @@ the gap is the wiring between them.
 
 | Kubernetes | HyperMesh | Status | Citation |
 |---|---|---|---|
-| Control plane (API server + scheduler + reconcilers) | **NGauge** — orchestration + routing intelligence | **STUB** (traits exist, **UNWIRED**) | `engauge/src/routing_intel.rs` (PathAdvisor / RoutingAdvisor / EbpfPolicyFeedback traits); "not yet emitted from real metrics" — `blockmatrix/tests/ebpf_feedback_integration.rs` |
+| Control plane (API server + scheduler + reconcilers) | **NGauge** — orchestration + routing intelligence | **STUB** (traits exist, **UNWIRED**) | `ngauge/src/routing_intel.rs` (PathAdvisor / RoutingAdvisor / EbpfPolicyFeedback traits); "not yet emitted from real metrics" — `blockmatrix/tests/ebpf_feedback_integration.rs` |
 | etcd (cluster state / source of truth) | **TrustChain** — network state: CA \| CT \| DNS \| identity/PoS | **REAL** | see TrustChain breakdown below |
 | └ CA | FALCON-1024 issuance, four-proof validation | **REAL** | `trustchain/src/ca/certificate_authority.rs` |
 | └ CT log | Ed25519 signed log; **merkle tree is a placeholder** `Arc<RwLock<()>>` | **REAL (merkle STUB)** | `trustchain/src/ct/certificate_transparency/operations.rs` |
@@ -73,7 +73,7 @@ Addresses are **content-derived and causally placed**, *never identity-flat*.
 2. **Matrix-position-aware routing is unwired.** `stoq/src/transport/multipath/policy.rs:206`
    drops its policy params; tensor routing exists in blockmatrix but doesn't drive STOQ/eBPF.
 3. **NGauge routing-intelligence → eBPF feedback is traits-only.**
-   `engauge/src/routing_intel.rs` — "not yet emitted from real metrics."
+   `ngauge/src/routing_intel.rs` — "not yet emitted from real metrics."
 4. **Link/carrier self-management is genuinely unbuilt** (the `eno1` problem). The surviving
    base-crate scaffold (`core/base/`, `SubstrateAdapter` traits + adapters) is its home.
 5. **STOQ content reflection (mirror-and-forward) is a stub** (`SeedInfo` unused in
